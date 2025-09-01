@@ -1,0 +1,6 @@
+{
+  "type": "postgres",
+  "url": "postgres://…",
+  "entities": ["src/entity/**/*.ts"],
+  "migrations": ["src/migration/**/*.ts"]
+}
