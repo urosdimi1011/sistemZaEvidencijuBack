@@ -18,7 +18,7 @@ import occupationsRoutes from "./routes/occupationsRoutes";
 const app = express();
 app.use(cookieParser());
 app.use(cors({
-    origin: 'http://localhost:5173',
+    origin: 'https://elaborate-tanuki-50aef0.netlify.app/',
     credentials: true
 }));
 app.use(express.json());
