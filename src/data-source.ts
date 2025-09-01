@@ -22,6 +22,9 @@ export const AppDataSource = new DataSource({
             ? [path.join(__dirname, "migrations/*.js")]
             : [path.join(__dirname, "migrations/*.ts")],
     synchronize: false,
+    ssl: process.env.NODE_ENV === 'production' ? {
+        rejectUnauthorized: false // 👈 Ovo je KLJUČNO za Render
+    } : false,
     migrationsRun:false,
     logging : false
 });
