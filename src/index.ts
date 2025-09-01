@@ -18,7 +18,10 @@ import occupationsRoutes from "./routes/occupationsRoutes";
 const app = express();
 app.use(cookieParser());
 app.use(cors({
-    origin: 'https://kaleidoscopic-croissant-94ae88.netlify.app/',
+    origin: [
+        'https://kaleidoscopic-croissant-94ae88.netlify.app',
+        'http://localhost:5173' // za lokalni razvoj
+    ],
     credentials: true
 }));
 app.use(express.json());
