@@ -18,7 +18,7 @@ import occupationsRoutes from "./routes/occupationsRoutes";
 const app = express();
 app.use(cookieParser());
 app.use(cors({
-    origin: 'https://elaborate-tanuki-50aef0.netlify.app/',
+    origin: 'https://kaleidoscopic-croissant-94ae88.netlify.app/',
     credentials: true
 }));
 app.use(express.json());
