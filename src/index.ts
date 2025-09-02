@@ -15,17 +15,20 @@ import authRoutes from "./routes/authRoutes";
 import { auth } from './middlewares/authMiddleware';
 import cookieParser from 'cookie-parser';
 import occupationsRoutes from "./routes/occupationsRoutes";
+
 const app = express();
+
 app.use(cookieParser());
+
 app.use(cors({
     origin: [
         'https://kaleidoscopic-croissant-94ae88.netlify.app',
-        'http://localhost:5173' // za lokalni razvoj
+        'http://localhost:5173'
     ],
     credentials: true
 }));
-app.use(express.json());
 
+app.use(express.json());
 const PORT = process.env.PORT || 5000;
 
 async function main() {
