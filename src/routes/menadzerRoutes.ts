@@ -102,6 +102,9 @@ router.post('/', async (req, res) => {
 router.patch('/:id', async (req, res) => {
     try {
         const menadzerId = parseInt(req.params.id);
+
+
+
         const updateResult = await menadzerRepo.update(menadzerId, req.body);
 
         if (updateResult.affected === 0) {

@@ -187,8 +187,16 @@ router.post('/', async (req, res) => {
 router.patch('/:id', async (req, res) => {
     try {
         const studentId = parseInt(req.params.id);
-        console.log(req.body);
-        const updateResult = await studentiRepo.update(studentId, req.body);
+        const dataForSend = req.body;
+
+        if (dataForSend.managerId === null || dataForSend.managerId === undefined || dataForSend.managerId === '') {
+            dataForSend.managerId = null;
+        }
+        if (dataForSend.procenatManagera === null || dataForSend.procenatManagera === undefined || dataForSend.procenatManagera === '') {
+            dataForSend.procenatManagera = null;
+        }
+
+        const updateResult = await studentiRepo.update(studentId, dataForSend);
 
         if (updateResult.affected === 0) {
             return res.status(404).json({ error: 'Student nije pronađen' });
@@ -196,7 +204,7 @@ router.patch('/:id', async (req, res) => {
 
         const updatedStudent = await studentiRepo.findOne({
             where: { id: studentId },
-            relations: ['menadzer','payments','occupation'] // Uključujemo menadžera ako postoji
+            relations: ['menadzer','payments','occupation']
         });
 
         if (!updatedStudent) {

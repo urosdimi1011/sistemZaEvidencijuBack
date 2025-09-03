@@ -95,22 +95,29 @@ router.post('/:idStudenta/isplataMenadzeru', async (req, res) => {
         if (!student) {
             return res.status(404).json({message: 'Student nije pronađen'});
         }
+
+        if(!student.menadzer){
+            return res.status(404).json({message: 'Student nema menadzera'});
+        }
         const totalPaidToManager = student.managerPayouts.reduce((sum, payout) => sum + Number(payout.amount), 0);
 
-        const maxAllowedForManager = student.cenaSkolarine * (student.procenatManagera / 100);
+        const maxAllowedForManager = student.procenatManagera ? student.cenaSkolarine * (student.procenatManagera / 100) : null;
+        let remainingForManager = null
+        if(maxAllowedForManager){
+            remainingForManager = maxAllowedForManager - totalPaidToManager;
 
-        const remainingForManager = maxAllowedForManager - totalPaidToManager;
-
-        if (iznosZaUplatu > remainingForManager) {
-            return res.status(400).json({
-                message: `Iznos premašuje preostali iznos za isplatu menadžeru. 
-                 Možete isplatiti najviše ${remainingForManager.toFixed(2)}.`,
-                maxAllowed: remainingForManager,
-                totalPaidToManager: totalPaidToManager,
-                maxAllowedForManager: maxAllowedForManager
-            });
         }
-
+        if(remainingForManager){
+            if (iznosZaUplatu > remainingForManager) {
+                return res.status(400).json({
+                    message: `Iznos premašuje preostali iznos za isplatu menadžeru. 
+                 Možete isplatiti najviše ${remainingForManager.toFixed(2)}.`,
+                    maxAllowed: remainingForManager,
+                    totalPaidToManager: totalPaidToManager,
+                    maxAllowedForManager: maxAllowedForManager
+                });
+            }
+        }
 
         const novaIsplata = new ManagerPayment();
         novaIsplata.amount = iznosZaUplatu;

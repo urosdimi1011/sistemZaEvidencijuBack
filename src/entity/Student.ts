@@ -30,9 +30,12 @@ export class Student {
     @Column({ type: 'varchar', length: 100 })
     prezime!: string
 
-    @ManyToOne(() => Menadzer, (mgr) => mgr.students, { nullable: false })
+    @ManyToOne(() => Menadzer, (mgr) => mgr.students, {
+        nullable: true,
+        onDelete: 'SET NULL'
+    })
     @JoinColumn({ name: 'managerId' })
-    menadzer!: Menadzer
+    menadzer!: Menadzer | null
 
     @Column()
     managerId!: number;
@@ -46,10 +49,12 @@ export class Student {
     @Column('decimal', { precision: 10, scale: 2 })
     cenaSkolarine!: number
 
-    @Column({
-        default: 20,
+    @Column('int', {
+        nullable: true,
+        default: null
     })
-    procenatManagera!: number
+    procenatManagera!: number | null
+
 
     @CreateDateColumn()
     createdAt!: Date;
