@@ -65,15 +65,74 @@ router.get('/', async (_req, res) => {
 
 router.post('/', async (req, res) => {
     try {
+        if (Array.isArray(req.body)) {
+            return res.status(400).json({ error: 'Očekivan je objekat menadžera, a ne niz' });
+        }
+
         const novi = menadzerRepo.create(req.body);
         const sacuvan = await menadzerRepo.save(novi);
-        res.status(201).json(sacuvan);
+
+        const menadzer = Array.isArray(sacuvan) ? sacuvan[0] : sacuvan;
+
+        const menadzerSaStudentima = await menadzerRepo.findOne({
+            where: { id: menadzer.id },
+            relations: ['students']
+        });
+
+        if (!menadzerSaStudentima) {
+            return res.status(404).json({ error: 'Menadžer nije pronađen' });
+        }
+
+        const result = {
+            id: menadzerSaStudentima.id,
+            ime: menadzerSaStudentima.ime,
+            prezime: menadzerSaStudentima.prezime,
+            datumKreiranja: menadzerSaStudentima.datumKreiranja,
+            datumIzmene: menadzerSaStudentima.datumIzmene,
+            students: menadzerSaStudentima.students,
+            studentsCount: menadzerSaStudentima.students.length,
+        };
+
+        res.status(201).json(result);
     } catch (err) {
         console.error(err);
         res.status(400).json({ error: 'Neispravni podaci za menadžera' });
     }
 });
+router.patch('/:id', async (req, res) => {
+    try {
+        const menadzerId = parseInt(req.params.id);
+        const updateResult = await menadzerRepo.update(menadzerId, req.body);
 
+        if (updateResult.affected === 0) {
+            return res.status(404).json({ error: 'Menadžer nije pronađen' });
+        }
+
+        const updatedManager = await menadzerRepo.findOne({
+            where: { id: menadzerId },
+            relations: ['students']
+        });
+
+        if (!updatedManager) {
+            return res.status(404).json({ message: 'Menadžer nije pronađen' });
+        }
+
+        const result = {
+            id: updatedManager.id,
+            ime: updatedManager.ime,
+            prezime: updatedManager.prezime,
+            datumKreiranja: updatedManager.datumKreiranja,
+            datumIzmene: updatedManager.datumIzmene,
+            students: updatedManager.students,
+            studentsCount: updatedManager.students.length,
+        };
+
+        res.status(200).json(result);
+    } catch (err) {
+        console.error(err);
+        res.status(400).json({ error: 'Neispravni podaci za menadžera' });
+    }
+});
 router.get('/isplate/:id', async (req, res) => {
     try {
         const managerId = parseInt(req.params.id);
