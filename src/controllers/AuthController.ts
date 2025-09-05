@@ -24,7 +24,8 @@ export const register = async (req: Request, res: Response) => {
 
         await userRepository.save(user);
         res.status(201).json({ message: 'Korisnik uspešno registrovan' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Greška prilikom registracije' });
     }
@@ -33,20 +34,34 @@ export const register = async (req: Request, res: Response) => {
 export const login = async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
-        const user = await userRepository.findOne({ where: { email } });
+        const user = await userRepository.findOne(
+            {
+                where: { email },
+                relations : ['school']
+            });
+
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(401).json({ message: 'Pogrešan email ili lozinka' });
         }
 
         const tokenAuth = jwt.sign(
-            { id: user.id, role: user.role },
+            {
+                id: user.id,
+                role: user.role,
+                schoolId: user.schoolId,
+                email: user.email,
+                school: user.school
+            },
             process.env.JWT_SECRET!,
             { expiresIn: '1h' }
         );
 
         const userResponse = {
-            email : user.email,
-            role : user.role
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            schoolId: user.schoolId,
+            school: user.school
         }
 
         res.cookie('authToken', tokenAuth, {
@@ -55,10 +70,9 @@ export const login = async (req: Request, res: Response) => {
             sameSite: 'none',
             maxAge: 15 * 60 * 1000,
         });
-
         res.json({ tokenAuth, user:userResponse});
-    } catch (error) {
-        console.error(error);
+    }
+    catch (error) {
         res.status(500).json({ message: 'Greška prilikom prijave' });
     }
 };

@@ -12,9 +12,10 @@ import paymantsRoutes from "./routes/paymantsRoutes";
 import statisticsRoutes from './routes/statisticsRoutes';
 
 import authRoutes from "./routes/authRoutes";
-import { auth } from './middlewares/authMiddleware';
+import {auth, schoolAccessMiddleware} from './middlewares/authMiddleware';
 import cookieParser from 'cookie-parser';
 import occupationsRoutes from "./routes/occupationsRoutes";
+import usersRoutes from "./routes/UsersRoutes";
 
 const app = express();
 
@@ -23,6 +24,7 @@ app.use(cookieParser());
 app.use(cors({
     origin: [
         'https://kaleidoscopic-croissant-94ae88.netlify.app',
+        'http://localhost:4173',
         'http://localhost:5173'
     ],
     credentials: true
@@ -39,11 +41,12 @@ async function main() {
         app.use('/api/auth', authRoutes);
 
 
-        app.use('/api/menadzeri', auth(),menadzerRoutes);
-        app.use('/api/statistics', auth(),statisticsRoutes);
-        app.use('/api/students', auth() ,studentRoutes);
-        app.use('/api/payments',auth() ,paymantsRoutes);
-        app.use('/api/occupations',auth() ,occupationsRoutes);
+        app.use('/api/menadzeri', [auth(),schoolAccessMiddleware()],menadzerRoutes);
+        app.use('/api/statistics', [auth(),schoolAccessMiddleware()],statisticsRoutes);
+        app.use('/api/students', [auth(),schoolAccessMiddleware()] ,studentRoutes);
+        app.use('/api/payments',[auth(),schoolAccessMiddleware()] ,paymantsRoutes);
+        app.use('/api/occupations',[auth(),schoolAccessMiddleware()] ,occupationsRoutes);
+        app.use('/api/users',[auth(),schoolAccessMiddleware()] ,usersRoutes);
 
         app.listen(PORT, () =>
             console.log(`🚀 Server pokrenut na http://localhost:${PORT}`)

@@ -1,4 +1,13 @@
-import {Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn} from 'typeorm';
+import {
+    Entity,
+    PrimaryGeneratedColumn,
+    Column,
+    CreateDateColumn,
+    UpdateDateColumn,
+    ManyToOne,
+    JoinColumn
+} from 'typeorm';
+import {School} from "./School";
 
 @Entity()
 export class User {
@@ -12,7 +21,15 @@ export class User {
     password!: string;
 
     @Column()
-    role!: 'admin' | 'korisnik'; // Dodajte druge role po potrebi
+    role!: 'admin' | 'school_manager' | 'korisnik'; // Dodajte druge role po potrebi
+
+
+    @ManyToOne(() => School, (school) => school.users, { nullable: true })
+    @JoinColumn({ name: 'schoolId' })
+    school!: School | null;
+
+    @Column({ nullable: true })
+    schoolId!: number | null;
 
     @CreateDateColumn()
     createdAt!: Date;

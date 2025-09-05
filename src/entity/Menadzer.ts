@@ -3,7 +3,7 @@ import {Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, OneToMany, Ind
 
 import {Student} from './Student';
 import {ManagerPayment} from "./ManagerPayment";
-import {Payment} from "./Payment";
+
 @Entity()
 export class Menadzer {
     @PrimaryGeneratedColumn()

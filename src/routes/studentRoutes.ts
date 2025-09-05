@@ -5,6 +5,8 @@ import {Student} from "../entity/Student";
 import {Between, FindOptionsWhere, Like} from "typeorm";
 import {object} from "yup";
 import {Payment} from "../entity/Payment";
+import {StudentService} from "../services/student.service";
+import {w} from "@faker-js/faker/dist/airline-CLphikKp";
 
 const router = Router()
 const studentiRepo = AppDataSource.getRepository(Student);
@@ -13,63 +15,95 @@ router.get('/', async (req, res) => {
     try {
         const searchTerm = (req.query.search as string)?.trim();
         const datePicker = (req.query.date as string)?.trim();
-        let whereConditions: FindOptionsWhere<Student>[] | undefined = undefined; // Eksplicitni tip
+        const schoolIdTerm = (req.query.schoolId as string)?.trim();
 
-        let dateCondition: FindOptionsWhere<Student> | undefined = undefined;
+        let where: FindOptionsWhere<Student> | FindOptionsWhere<Student>[] = {};
+
+
+        const page = Math.max(1, parseInt(req.query.page as string) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+        const offset = (page - 1) * limit;
+
+        // Sortiranje parametri
+        const sortBy = (req.query.sortBy as string) || 'createdAt';
+        const sortOrder = (req.query.sortOrder as 'ASC' | 'DESC') || 'DESC';
+
+        let baseWhere: FindOptionsWhere<Student> = {};
+
+
+        if (schoolIdTerm) {
+            baseWhere.occupation = {
+                    school: {
+                        id: Number(schoolIdTerm)
+                    }
+                }
+            }
+
         if (datePicker) {
             const selectedDate = new Date(datePicker);
 
-            // Proverite da li je datum validan
             if (isNaN(selectedDate.getTime())) {
                 return res.status(400).json({message: 'Nevalidan format datuma. Koristite YYYY-MM-DD'});
             }
 
-            // Postavite početak i kraj dana za tačno filtriranje
             const startOfDay = new Date(selectedDate);
             startOfDay.setHours(0, 0, 0, 0);
 
             const endOfDay = new Date(selectedDate);
             endOfDay.setHours(23, 59, 59, 999);
 
-            // Kreirajte uslov za datum
-             dateCondition = {
-                createdAt: Between(startOfDay, endOfDay)
-            } as FindOptionsWhere<Student>;
+
+            baseWhere.createdAt = Between(startOfDay, endOfDay);
+
         }
 
-            if (searchTerm) {
-            const terms = searchTerm.split(/\s+/).filter(t => t.length > 0);
+        let finalWhere: FindOptionsWhere<Student> | FindOptionsWhere<Student>[];
 
-            whereConditions = terms.flatMap(term => [
-                { ime: Like(`%${term}%`) } as FindOptionsWhere<Student>,
-                { prezime: Like(`%${term}%`) } as FindOptionsWhere<Student>
-            ]);
+        if (searchTerm) {
+            const terms = searchTerm.split(/\s+/).filter(t => t.length > 0);
+            const searchConditions: FindOptionsWhere<Student>[] = [];
+
+            terms.forEach(term => {
+                searchConditions.push(
+                    { ...baseWhere, ime: Like(`%${term}%`) },
+                    { ...baseWhere, prezime: Like(`%${term}%`) }
+                );
+            });
 
             if (terms.length >= 2) {
-                whereConditions.push(
+                searchConditions.push(
                     {
+                        ...baseWhere,
                         ime: Like(`%${terms[0]}%`),
                         prezime: Like(`%${terms[1]}%`)
-                    } as FindOptionsWhere<Student>,
+                    },
                     {
+                        ...baseWhere,
                         ime: Like(`%${terms[1]}%`),
                         prezime: Like(`%${terms[0]}%`)
-                    } as FindOptionsWhere<Student>
+                    }
                 );
             }
+            finalWhere = searchConditions;
+
+        } else {
+            finalWhere = baseWhere;
         }
 
+        const allowedSortFields = ['createdAt', 'ime', 'prezime', 'cenaSkolarine'];
+        const finalSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'createdAt';
 
-        const studenti = await studentiRepo.find({
-            where: dateCondition,
-            relations: ['menadzer', 'payments','managerPayouts','occupation'],
-            order: {
-                createdAt: 'DESC'
-            }
+        const order: any = {};
+        order[finalSortBy] = sortOrder;
+        const [studenti, totalCount] = await studentiRepo.findAndCount({
+            where: finalWhere,
+            relations: ['menadzer', 'payments', 'managerPayouts', 'occupation.school'],
+            order: order,
+            take: limit,
+            skip: offset
         });
 
 
-        studenti
 
 
         const result = studenti.map(m => ({
@@ -87,12 +121,82 @@ router.get('/', async (req, res) => {
             preostaliDugZaMenadzera :(m.cenaSkolarine * (Number(m.procenatManagera) / 100)) - (m.managerPayouts.reduce((sum, payout) => sum + Number(payout.amount), 0)),
             procenatMenadzeru: m.procenatManagera,
             menadzer: m.menadzer,
+            schoolId: m.occupation?.school?.id
         }));
 
-        res.json(result);
+        const totalPages = Math.ceil(totalCount / limit);
+        const hasNextPage = page < totalPages;
+        const hasPrevPage = page > 1;
+
+        res.json({
+            data: result,
+            pagination: {
+                currentPage: page,
+                totalPages: totalPages,
+                totalItems: totalCount,
+                itemsPerPage: limit,
+                hasNextPage: hasNextPage,
+                hasPrevPage: hasPrevPage
+            },
+            filters: {
+                search: searchTerm || null,
+                date: datePicker || null,
+                schoolId: schoolIdTerm ? Number(schoolIdTerm) : null
+            },
+            sorting: {
+                sortBy: finalSortBy,
+                sortOrder: sortOrder
+            }
+        });
+
     } catch (error) {
         console.error('Greška pri dobavljanju studenata:', error);
         res.status(500).json({ message: 'Došlo je do greške pri dobavljanju studenata' });
+    }
+});
+
+router.get('/stats', async (req, res) => {
+    try {
+        const schoolIdTerm = (req.query.schoolId as string)?.trim();
+        let where: FindOptionsWhere<Student> = {};
+
+        if (schoolIdTerm) {
+            where = {
+                occupation: {
+                    school: {
+                        id: Number(schoolIdTerm)
+                    }
+                }
+            };
+        }
+
+        const totalCount = await studentiRepo.count({
+            where,
+            relations: ['occupation.school']
+        });
+
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+
+        const todayCount = await studentiRepo.count({
+            where: {
+                ...where,
+                createdAt: Between(todayStart, todayEnd)
+            },
+            relations: ['occupation.school']
+        });
+
+        res.json({
+            totalStudents: totalCount,
+            todayStudents: todayCount,
+            timestamp: new Date()
+        });
+
+    } catch (error) {
+        console.error('Greška pri dobavljanju statistika:', error);
+        res.status(500).json({ message: 'Došlo je do greške pri dobavljanju statistika' });
     }
 });
 
@@ -137,7 +241,8 @@ router.get('/:id', async (req, res) => {
                 },
                 managerPayments:{
                     installments : student.managerPayouts
-                }
+                },
+                schoolId: student.occupation?.school?.id
             }
         });
 
@@ -175,6 +280,8 @@ router.post('/', async (req, res) => {
             preostaliDug: studentSaMenadzerom.cenaSkolarine - studentSaMenadzerom.payments.reduce((sum,payment)=>sum + Number(payment.amount),0),
             procenatMenadzeru: studentSaMenadzerom.procenatManagera,
             menadzer: studentSaMenadzerom.menadzer,
+            schoolId: studentSaMenadzerom.occupation?.school?.id
+
         };
 
         res.status(201).json(result);
@@ -225,6 +332,7 @@ router.patch('/:id', async (req, res) => {
             preostaliDug: updatedStudent.cenaSkolarine - updatedStudent.payments.reduce((sum,payment)=>sum + Number(payment.amount),0),
             procenatMenadzeru: updatedStudent.procenatManagera,
             menadzer: updatedStudent.menadzer,
+            schoolId: updatedStudent.occupation?.school?.id
         };
 
         res.status(200).json(result);
@@ -308,5 +416,25 @@ router.delete('/:id', async (req, res) => {
 
 });
 // POST, PUT, DELETE…
+
+router.get('/school', async (req, res) => {
+    const studentService = new StudentService();
+
+    try {
+        const { page = 1, limit = 20 } = req.query;
+        const {schoolId} = req.body; // Nakon schoolAccessMiddleware, sigurno postoji
+
+        const result = await studentService.getStudentsForSchool(
+            schoolId,
+            Number(page),
+            Number(limit)
+        );
+
+        res.json(result);
+    } catch (error : any) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
 
 export default router

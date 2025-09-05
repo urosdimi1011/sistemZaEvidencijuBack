@@ -19,6 +19,9 @@ export class Student {
     @JoinColumn({ name: 'occupationId' })
     occupation!: Occupation
 
+    @Column()
+    occupationId!: number | null;
+
     @Index()
     @Column({ type: 'varchar', length: 100 })
     ime!: string
@@ -38,7 +41,7 @@ export class Student {
     menadzer!: Menadzer | null
 
     @Column()
-    managerId!: number;
+    managerId!: number | null;
 
     @OneToMany(() => Payment, (payment) => payment.student)
     payments!: Payment[];
