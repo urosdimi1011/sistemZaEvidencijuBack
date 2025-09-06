@@ -3,7 +3,7 @@ import { Router, Request, Response } from 'express'
 import { AppDataSource } from '../data-source'
 import { Menadzer } from '../entity/Menadzer'
 import {ManagerPayment} from "../entity/ManagerPayment";
-import {FindOptionsWhere} from "typeorm";
+import {FindOptionsWhere, Like} from "typeorm";
 import {Student} from "../entity/Student";
 import {
     filterStudentsByRange,
@@ -17,50 +17,96 @@ const router = Router()
 const menadzerRepo = AppDataSource.getRepository(Menadzer)
 const managerPaymentRepo = AppDataSource.getRepository(ManagerPayment);
 
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
+    const range = req.query.range as string;
+    const year = req.query.year as string;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const search = req.query.search as string;
 
-    const range = _req.query.range as string;
-    const year = _req.query.year as string;
-    const menadzeri = await menadzerRepo.find({
-        relations: ['students', 'isplate'],
-    });
-    if (range || year) {
-        const result = menadzeri.map((menadzer) => {
-            // Filtriraj studente po range-u i godini
-            const filteredStudents = filterStudentsByRangeAndYear(menadzer.students, range, year);
+    try {
+        // Kreiraj where uslove za pretragu
+        const whereConditions = search ? [
+            { ime: Like(`%${search}%`) },
+            { prezime: Like(`%${search}%`) }
+        ] : {};
 
-            return {
-                managerId: menadzer.id,
-                managerName: `${menadzer.ime} ${menadzer.prezime}`,
-                studentCount: filteredStudents.length,
-                totalRevenue: filteredStudents.reduce((sum, student) => Number(sum) + Number(student.cenaSkolarine), 0),
-                // Detaljnija statistika
-                stats: getDetailedStats(filteredStudents, range, year)
-            };
-        });
+        if (range || year) {
+            // Statistički prikaz - dohvati sve za statistike
+            const menadzeri = await menadzerRepo.find({
+                relations: ['students', 'isplate'],
+                ...(search && { where: whereConditions })
+            });
 
-        const sortedResult = result.sort((a, b) => b.studentCount - a.studentCount);
+            const result = menadzeri.map((menadzer) => {
+                const filteredStudents = filterStudentsByRangeAndYear(menadzer.students, range, year);
+                return {
+                    managerId: menadzer.id,
+                    managerName: `${menadzer.ime} ${menadzer.prezime}`,
+                    studentCount: filteredStudents.length,
+                    totalRevenue: filteredStudents.reduce((sum, student) =>
+                        Number(sum) + Number(student.cenaSkolarine), 0),
+                    stats: getDetailedStats(filteredStudents, range, year)
+                };
+            });
 
+            const sortedResult = result.sort((a, b) => b.studentCount - a.studentCount);
 
-        res.json({
-            managers: sortedResult,
-            // Vrati dostupne godine za buduće filtere
-            availableYears: getAvailableYears(menadzeri.flatMap(m => m.students))
-        });
-    } else {
-        const result = menadzeri.map(m => ({
-            id: m.id,
-            ime: m.ime,
-            prezime: m.prezime,
-            datumKreiranja: m.datumKreiranja,
-            datumIzmene: m.datumIzmene,
-            students: m.students,
-            studentsCount: m.students.length,
-        }));
+            // Straničenje za statistike (nakon filtriranja)
+            const startIndex = (page - 1) * limit;
+            const endIndex = startIndex + limit;
+            const paginatedResult = sortedResult.slice(startIndex, endIndex);
 
-        res.json(result);
+            res.json({
+                managers: paginatedResult,
+                pagination: {
+                    currentPage: page,
+                    totalPages: Math.ceil(sortedResult.length / limit),
+                    totalItems: sortedResult.length,
+                    itemsPerPage: limit,
+                    hasNextPage: endIndex < sortedResult.length,
+                    hasPreviousPage: page > 1
+                },
+                availableYears: getAvailableYears(menadzeri.flatMap(m => m.students))
+            });
+        } else {
+            // Obični prikaz sa findAndCount za efikasniju paginaciju
+            const [menadzeri, totalItems] = await menadzerRepo.findAndCount({
+                relations: ['students', 'isplate'],
+                ...(search && { where: whereConditions }),
+                skip: (page - 1) * limit,
+                take: limit,
+                order: { id: 'ASC' } // ili bilo koji drugi sort
+            });
+
+            const result = menadzeri.map(m => ({
+                id: m.id,
+                ime: m.ime,
+                prezime: m.prezime,
+                datumKreiranja: m.datumKreiranja,
+                datumIzmene: m.datumIzmene,
+                students: m.students,
+                studentsCount: m.students.length,
+            }));
+
+            const totalPages = Math.ceil(totalItems / limit);
+
+            res.json({
+                managers: result,
+                pagination: {
+                    currentPage: page,
+                    totalPages: totalPages,
+                    totalItems: totalItems,
+                    itemsPerPage: limit,
+                    hasNextPage: page < totalPages,
+                    hasPreviousPage: page > 1
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Greška pri dohvatanju menadžera:', error);
+        res.status(500).json({ error: 'Greška servera' });
     }
-
 });
 
 router.post('/', async (req, res) => {

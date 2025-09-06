@@ -24,6 +24,8 @@ router.get('/', async (req, res) => {
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
         const offset = (page - 1) * limit;
 
+
+
         // Sortiranje parametri
         const sortBy = (req.query.sortBy as string) || 'createdAt';
         const sortOrder = (req.query.sortOrder as 'ASC' | 'DESC') || 'DESC';

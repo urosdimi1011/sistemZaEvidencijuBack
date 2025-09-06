@@ -56,6 +56,7 @@ router.post('/:id', async (_req, res) => {
                 paidAt: payment.paidAt
             },
             student: {
+                id : payment.student.id,
                 totalPaid: totalPaid + iznosZaUplatu,
                 remainingAmount: remainingAmount - iznosZaUplatu
             }
