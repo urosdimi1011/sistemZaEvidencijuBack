@@ -12,7 +12,7 @@ const managerPaymentRepo = AppDataSource.getRepository(ManagerPayment);
 router.post('/:id', async (_req, res) => {
     try {
         const studentId = parseInt(_req.params.id);
-        const iznosZaUplatu = parseInt(_req.body.iznosZaUplatu);
+        const iznosZaUplatu = parseFloat(_req.body.iznosZaUplatu);
 
         if (isNaN(studentId) || isNaN(iznosZaUplatu) || iznosZaUplatu <= 0) {
             return res.status(400).json({
@@ -31,7 +31,6 @@ router.post('/:id', async (_req, res) => {
 
         const totalPaid = student.payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
         const remainingAmount = student.cenaSkolarine - totalPaid;
-        console.log(remainingAmount);
         if (iznosZaUplatu > remainingAmount) {
             return res.status(400).json({
                 message: `Iznos uplate (${iznosZaUplatu}€) premašuje preostali dug (${remainingAmount}€)`,

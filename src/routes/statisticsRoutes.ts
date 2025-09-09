@@ -3,7 +3,7 @@ import { AppDataSource } from '../data-source'
 import { School } from '../entity/School'
 import { Occupation } from '../entity/Occupation'
 import { Student } from '../entity/Student'
-import { Between } from 'typeorm'
+import {Between, Like} from 'typeorm'
 
 const router = Router()
 const schoolRepo = AppDataSource.getRepository(School)
@@ -289,7 +289,14 @@ router.get('/expected-payments', async (req, res) => {
 // API za detaljne očekivane uplate po studentima
 router.get('/expected-payments-details', async (req, res) => {
     try {
-        const { year, month } = req.query;
+        const {
+            year,
+            month,
+            page = '1',
+            limit = '10',
+            studentName = '',
+            status = ''
+        } = req.query;
 
         if (!year) {
             return res.status(400).json({ error: 'Godina je obavezna' });
@@ -297,6 +304,10 @@ router.get('/expected-payments-details', async (req, res) => {
 
         const targetYear = parseInt(year as string);
         const targetMonth = month ? parseInt(month as string) : null;
+        const currentPage = parseInt(page as string);
+        const itemsPerPage = parseInt(limit as string);
+        const searchName = (studentName as string).trim();
+        const searchStatus = status as string;
 
         let startDate, endDate;
         if (targetMonth) {
@@ -307,17 +318,41 @@ router.get('/expected-payments-details', async (req, res) => {
             endDate = new Date(targetYear, 11, 31);
         }
 
-        // Dobij sve studente za target period
-        const students = await studentRepo.find({
-            where: {
-                createdAt: Between(startDate, endDate)
-            },
-            relations: ['payments', 'occupation', 'occupation.school', 'menadzer']
-        });
+        // Prvo dobijamo sve studente koji zadovoljavaju osnovne uslove
+        const queryBuilder = studentRepo
+            .createQueryBuilder('student')
+            .leftJoinAndSelect('student.payments', 'payments')
+            .leftJoinAndSelect('student.occupation', 'occupation')
+            .leftJoinAndSelect('occupation.school', 'school')
+            .leftJoinAndSelect('student.menadzer', 'menadzer')
+            .where('student.createdAt BETWEEN :startDate AND :endDate', {
+                startDate,
+                endDate
+            });
 
-        const result = students.map(student => {
+        // Dodaj pretragu po imenu ako je unesena
+        if (searchName) {
+            queryBuilder.andWhere(
+                '(student.ime LIKE :name OR student.prezime LIKE :name)',
+                { name: `%${searchName}%` }
+            );
+        }
+
+        const allStudents = await queryBuilder.getMany();
+
+        // Obradi podatke i primeni status filter
+        let filteredStudents = allStudents.map(student => {
             const totalPaid = student.payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
             const remainingAmount = Number(student.cenaSkolarine) - totalPaid;
+
+            let paymentStatus;
+            if (remainingAmount === 0) {
+                paymentStatus = 'Plaćeno';
+            } else if (remainingAmount === Number(student.cenaSkolarine)) {
+                paymentStatus = 'Nije plaćeno';
+            } else {
+                paymentStatus = 'Delimično';
+            }
 
             return {
                 studentId: student.id,
@@ -328,19 +363,41 @@ router.get('/expected-payments-details', async (req, res) => {
                 totalAmount: Number(student.cenaSkolarine),
                 paidAmount: totalPaid,
                 remainingAmount: remainingAmount,
-                paymentStatus: remainingAmount === 0 ? 'Plaćeno' : remainingAmount === Number(student.cenaSkolarine) ? 'Nije plaćeno' : 'Delimično plaćeno',
+                paymentStatus: paymentStatus,
                 createdAt: student.createdAt
             };
         });
 
-        res.json(result);
+        // Filtriraj po statusu ako je izabran
+        if (searchStatus && searchStatus !== 'Svi') {
+            filteredStudents = filteredStudents.filter(student => student.paymentStatus === searchStatus);
+        }
+
+        const totalItems = filteredStudents.length;
+        const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+        // Primena paginacije
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        const endIndex = Math.min(startIndex + itemsPerPage, totalItems);
+        const result = filteredStudents.slice(startIndex, endIndex);
+
+        res.json({
+            data: result,
+            pagination: {
+                currentPage: currentPage,
+                totalPages: totalPages,
+                totalItems: totalItems,
+                itemsPerPage: itemsPerPage,
+                hasNextPage: currentPage < totalPages,
+                hasPreviousPage: currentPage > 1
+            }
+        });
+
     } catch (error) {
         console.error('Greška pri dobavljanju detalja očekivanih uplata:', error);
         res.status(500).json({ error: 'Interna greška servera' });
     }
 });
-
-// Pomocna funkcija za ime meseca
 function getMonthName(month: number): string {
     const months = [
         'Januar', 'Februar', 'Mart', 'April', 'Maj', 'Jun',

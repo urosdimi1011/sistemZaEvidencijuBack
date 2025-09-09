@@ -26,4 +26,31 @@ router.get('/occupations', async (req: Request, res: Response) => {
         res.status(500).json({ message: error.message });
     }
 });
+
+router.get('/school/:schoolId', async (req, res) => {
+    try {
+        const { schoolId } = req.params;
+
+        const idSchool = parseInt(schoolId);
+
+        const schools = await schoolRepo.find({
+            where: { id: idSchool },
+            relations: ['occupations']
+        });
+
+        if (!schools || schools.length === 0) {
+            return res.status(404).json({
+                error: 'Škola nije pronađena'
+            });
+        }
+
+        res.json(schools);
+
+    } catch (error) {
+        console.error('Greška pri dohvatanju smerova za školu:', error);
+        res.status(500).json({
+            error: 'Interna greška servera'
+        });
+    }
+});
 export default router

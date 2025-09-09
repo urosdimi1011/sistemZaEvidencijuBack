@@ -109,6 +109,33 @@ router.get('/', async (req, res) => {
     }
 });
 
+router.get('/dropdown', async (req, res) => {
+    try {
+        const search = req.query.search as string;
+
+        const whereConditions = search ? [
+            { ime: Like(`%${search}%`) },
+            { prezime: Like(`%${search}%`) }
+        ] : {};
+
+        const menadzeri = await menadzerRepo.find({
+            select: ['id', 'ime', 'prezime'],
+            ...(search && { where: whereConditions }),
+            order: { ime: 'ASC', prezime: 'ASC' }
+        });
+
+        const dropdownData = menadzeri.map(m => ({
+            value: m.id,
+            label: `${m.ime} ${m.prezime}`
+        }));
+
+        res.json(dropdownData);
+    } catch (error) {
+        console.error('Greška pri dohvatanju menadžera za dropdown:', error);
+        res.status(500).json({ error: 'Greška servera' });
+    }
+});
+
 router.post('/', async (req, res) => {
     try {
         if (Array.isArray(req.body)) {
@@ -185,10 +212,12 @@ router.patch('/:id', async (req, res) => {
 router.get('/isplate/:id', async (req, res) => {
     try {
         const managerId = parseInt(req.params.id);
+        const studentId = Number(req.query.studentId);
 
         const isplate = await managerPaymentRepo.find({
             where : {
-                menadzer : { id : managerId}
+                menadzer : { id : managerId},
+                student: { id: studentId }
             },
             relations: ['menadzer', 'student']
         })
@@ -205,21 +234,42 @@ router.get('/isplate/:id', async (req, res) => {
 });
 router.get('/zarade', async (req, res) => {
     try {
-        const godina = req.query.range as string;
+        const {
+            godina,
+            page = '1',
+            limit = '10',
+            search = ''
+        } = req.query;
+
+        const currentPage = parseInt(page as string);
+        const itemsPerPage = parseInt(limit as string);
+        const searchTerm = (search as string).trim();
+
+        let whereCondition: any = {};
+
+        if (searchTerm) {
+            whereCondition = [
+                { ime: Like(`%${searchTerm}%`) },
+                { prezime: Like(`%${searchTerm}%`) }
+            ];
+        }
+
+        const totalManagers = await menadzerRepo.count({ where: whereCondition });
 
         const menadzeriSaIsplatama = await menadzerRepo.find({
-            relations: ['students', 'isplate']
-        })
-
+            where: whereCondition,
+            relations: ['students', 'isplate'],
+            skip: (currentPage - 1) * itemsPerPage,
+            take: itemsPerPage,
+            order: { ime: 'ASC' }
+        });
 
         const results = menadzeriSaIsplatama.map((x) => {
             const zaradaPoUceniku = x.students.map(y => {
                 const ukupnaZarada = Number(y.cenaSkolarine) * (Number(y.procenatManagera) / 100);
-
-                // FILTRIRAJTE ISPLATE SAMO ZA OVOG UČENIKA (y.id)
                 const placenoZaUcenika = x.isplate && Array.isArray(x.isplate)
                     ? x.isplate
-                        .filter(z => z.studentId === y.id) // OVO JE KLJUČNO - filtriraj po učeniku
+                        .filter(z => z.studentId === y.id) // Filtriraj po učeniku
                         .reduce((sum, z) => sum + Number(z.amount || 0), 0)
                     : 0;
 
@@ -243,6 +293,7 @@ router.get('/zarade', async (req, res) => {
                     preostalo: ukupnaZarada - placenoZaUcenika
                 };
             }).sort((a, b) => b.zarada - a.zarada);
+
             const ukupnaZarada = zaradaPoUceniku.reduce((sum, ucenik) => sum + ucenik.zarada, 0);
             const ukupnoPlaceno = zaradaPoUceniku.reduce((sum, ucenik) => sum + ucenik.placeniIznos, 0);
 
@@ -259,18 +310,39 @@ router.get('/zarade', async (req, res) => {
 
         const sortedResult = results.sort((a, b) => b.zarada - a.zarada);
 
+        const totalPages = Math.ceil(totalManagers / itemsPerPage);
 
         if (!menadzeriSaIsplatama || menadzeriSaIsplatama.length === 0) {
-            return res.status(404).json({ message: 'Nema pronađenih menadzera' });
+            return res.status(200).json({
+                data: [],
+                pagination: {
+                    currentPage: currentPage,
+                    totalPages: 0,
+                    totalItems: 0,
+                    itemsPerPage: itemsPerPage,
+                    hasNextPage: false,
+                    hasPreviousPage: false
+                }
+            });
         }
 
-        return res.status(200).json(sortedResult);
+        return res.status(200).json({
+            data: sortedResult,
+            pagination: {
+                currentPage: currentPage,
+                totalPages: totalPages,
+                totalItems: totalManagers,
+                itemsPerPage: itemsPerPage,
+                hasNextPage: currentPage < totalPages,
+                hasPreviousPage: currentPage > 1
+            }
+        });
+
     } catch (err) {
         console.error(err);
         res.status(400).json({ error: 'Došlo je do greške pri dobavljanju isplata' });
     }
 });
-
 router.delete('/:id', async (req, res) => {
     const queryRunner = AppDataSource.createQueryRunner();
     await queryRunner.connect();
