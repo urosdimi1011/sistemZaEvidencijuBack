@@ -27,11 +27,11 @@ export class Student {
     ime!: string
 
     @Column({ type: 'varchar', length: 100, nullable:true })
-    imeRoditelja !: string
+    imeRoditelja !: string | null
 
     @Index()
     @Column({ type: 'varchar', length: 100 })
-    prezime!: string
+    prezime!: string | null
 
     @ManyToOne(() => Menadzer, (mgr) => mgr.students, {
         nullable: true,
@@ -42,6 +42,30 @@ export class Student {
 
     @Column()
     managerId!: number | null;
+
+    @Column({ type: 'text', nullable: true })
+    note!: string | null;
+
+    @Column('int',{
+        nullable: true,
+        default: null
+    })
+    literature!: number | null;
+
+    
+    @Column('varchar',{
+        nullable: true,
+        default: null
+    })
+    type!: 'vandredni' | 'redovni'; 
+
+    
+    @Column('varchar',{
+        nullable: true,
+        default: null
+    })
+    entry_type!: 'prekvalifikacija' | 'dokvalifikacija' | 'vanredni';
+
 
     @OneToMany(() => Payment, (payment) => payment.student)
     payments!: Payment[];
@@ -61,4 +85,6 @@ export class Student {
 
     @CreateDateColumn()
     createdAt!: Date;
+
+    
 }
