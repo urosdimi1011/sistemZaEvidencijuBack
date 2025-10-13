@@ -7,7 +7,6 @@ import {Occupation} from "../entity/Occupation";
 import {School} from "../entity/School";
 import {StudentService} from "../services/student.service";
 const router = Router()
-const occupationRepo = AppDataSource.getRepository(Occupation)
 const schoolRepo = AppDataSource.getRepository(School)
 
 router.get('/', async (_req, res) => {
@@ -16,6 +15,32 @@ router.get('/', async (_req, res) => {
     });
     res.json(schools);
 });
+
+router.get('/all', async (_req, res) => {
+    const schools = await schoolRepo.find();
+
+    const skole = schools.map(m => ({
+        value: m.id,
+        label: `${m.name}`
+    }));
+
+
+    res.json(skole);
+});
+
+
+router.get('/:id/occupations', async (_req, res) => {
+    const id = _req.params.id as unknown as number;
+    const schools = await schoolRepo.findOne(
+        {
+            where : {id: id},
+            relations : ['occupations']
+        },
+    );
+
+    res.json(schools);
+});
+
 router.get('/occupations', async (req: Request, res: Response) => {
     const studentService = new StudentService();
     try {

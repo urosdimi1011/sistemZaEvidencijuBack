@@ -10,6 +10,7 @@ import menadzerRoutes from "./routes/menadzerRoutes";
 import studentRoutes from "./routes/studentRoutes";
 import paymantsRoutes from "./routes/paymantsRoutes";
 import statisticsRoutes from './routes/statisticsRoutes';
+import schoolRoutes from './routes/schoolsRoutes';
 
 import authRoutes from "./routes/authRoutes";
 import {auth, schoolAccessMiddleware} from './middlewares/authMiddleware';
@@ -45,6 +46,7 @@ async function main() {
         app.use('/api/statistics', [auth(),schoolAccessMiddleware()],statisticsRoutes);
         app.use('/api/students', [auth(),schoolAccessMiddleware()] ,studentRoutes);
         app.use('/api/payments',[auth(),schoolAccessMiddleware()] ,paymantsRoutes);
+        app.use('/api/schools',[auth(),schoolAccessMiddleware()] ,schoolRoutes);
         app.use('/api/occupations',[auth(),schoolAccessMiddleware()] ,occupationsRoutes);
         app.use('/api/users',[auth(),schoolAccessMiddleware()] ,usersRoutes);
 

@@ -25,7 +25,7 @@ router.get('/monthly-enrollment', async (req, res) => {
 
         // Dobij sve škole sa svojim smerovima
         const schools = await schoolRepo.find({
-            relations: ['occupations'],
+            relations: ['occupations.students'],
         });
 
         const result = [];
@@ -124,18 +124,21 @@ router.get('/monthly-enrollment-aggregated', async (req, res) => {
                     month: month.toString().padStart(2, '0'),
                     monthName: getMonthName(month),
                     total: 0,
-                    byOccupation: {}
+                    byOccupation: {},
+                    studentsByOccupation: {}
                 };
 
                 // Za svaki smer u školi
                 for (const occupation of school.occupations) {
-                    const count = occupation.students.filter(student => {
+                    console.log(occupation.students);
+                    const students = occupation.students.filter(student => {
                         const studentDate = new Date(student.createdAt);
                         return studentDate.getFullYear() === targetYear &&
                             studentDate.getMonth() + 1 === month;
-                    }).length;
-
+                    })
+                    const count = students.length;
                     monthData.byOccupation[occupation.id] = count;
+                    monthData.studentsByOccupation[occupation.id] = students; 
                     monthData.total += count;
                 }
 
