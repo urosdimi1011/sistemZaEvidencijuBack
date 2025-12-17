@@ -229,6 +229,118 @@ router.get('/isplate/:id', async (req, res) => {
         res.status(400).json({ error: 'Došlo je do greške pri dobavljanju isplata' });
     }
 });
+// router.get('/zarade', async (req, res) => {
+//     try {
+//         const {
+//             godina,
+//             page = '1',
+//             limit = '10',
+//             search = ''
+//         } = req.query;
+
+//         const currentPage = parseInt(page as string);
+//         const itemsPerPage = parseInt(limit as string);
+//         const searchTerm = (search as string).trim();
+
+//         let whereCondition: any = {};
+
+//         if (searchTerm) {
+//             whereCondition = [
+//                 { ime: Like(`%${searchTerm}%`) },
+//                 { prezime: Like(`%${searchTerm}%`) }
+//             ];
+//         }
+
+//         const totalManagers = await menadzerRepo.count({ where: whereCondition });
+
+//         const menadzeriSaIsplatama = await menadzerRepo.find({
+//             where: whereCondition,
+//             relations: ['students', 'isplate'],
+//             skip: (currentPage - 1) * itemsPerPage,
+//             take: itemsPerPage,
+//             order: { ime: 'ASC' }
+//         });
+
+//         const results = menadzeriSaIsplatama.map((x) => {
+//             const zaradaPoUceniku = x.students.map(y => {
+//                 const ukupnaZarada = Number(y.cenaSkolarine) * (Number(y.procenatManagera) / 100);
+//                 const placenoZaUcenika = x.isplate && Array.isArray(x.isplate)
+//                     ? x.isplate
+//                         .filter(z => z.studentId === y.id) // Filtriraj po učeniku
+//                         .reduce((sum, z) => sum + Number(z.amount || 0), 0)
+//                     : 0;
+
+//                 console.log(`Učenik ${y.ime} ${y.prezime}: Zarada=${ukupnaZarada}, Plaćeno=${placenoZaUcenika}`);
+
+//                 let statusPlacanja;
+//                 if (placenoZaUcenika === 0) {
+//                     statusPlacanja = 'nije_placeno';
+//                 } else if (placenoZaUcenika < ukupnaZarada) {
+//                     statusPlacanja = 'delimicno_placeno';
+//                 } else {
+//                     statusPlacanja = 'u_punosti_placeno';
+//                 }
+
+//                 return {
+//                     idUcenika: y.id,
+//                     imeIPrezimeUcenika: y.ime + ' ' + y.prezime,
+//                     zarada: ukupnaZarada,
+//                     placeno: statusPlacanja,
+//                     placeniIznos: placenoZaUcenika,
+//                     preostalo: ukupnaZarada - placenoZaUcenika
+//                 };
+//             }).sort((a, b) => b.zarada - a.zarada);
+
+//             const ukupnaZarada = zaradaPoUceniku.reduce((sum, ucenik) => sum + ucenik.zarada, 0);
+//             const ukupnoPlaceno = zaradaPoUceniku.reduce((sum, ucenik) => sum + ucenik.placeniIznos, 0);
+
+//             return {
+//                 id: x.id,
+//                 name: x.ime + ' ' + x.prezime,
+//                 brojStudenata: x.students.length,
+//                 zaradaPoUceniku: zaradaPoUceniku,
+//                 zarada: ukupnaZarada,
+//                 ukupnoPlaceno: ukupnoPlaceno,
+//                 ukupnoPreostalo: ukupnaZarada - ukupnoPlaceno
+//             };
+//         });
+
+//         const sortedResult = results.sort((a, b) => b.zarada - a.zarada);
+
+//         const totalPages = Math.ceil(totalManagers / itemsPerPage);
+
+//         if (!menadzeriSaIsplatama || menadzeriSaIsplatama.length === 0) {
+//             return res.status(200).json({
+//                 data: [],
+//                 pagination: {
+//                     currentPage: currentPage,
+//                     totalPages: 0,
+//                     totalItems: 0,
+//                     itemsPerPage: itemsPerPage,
+//                     hasNextPage: false,
+//                     hasPreviousPage: false
+//                 }
+//             });
+//         }
+
+//         return res.status(200).json({
+//             data: sortedResult,
+//             pagination: {
+//                 currentPage: currentPage,
+//                 totalPages: totalPages,
+//                 totalItems: totalManagers,
+//                 itemsPerPage: itemsPerPage,
+//                 hasNextPage: currentPage < totalPages,
+//                 hasPreviousPage: currentPage > 1
+//             }
+//         });
+
+//     } catch (err) {
+//         console.error(err);
+//         res.status(400).json({ error: 'Došlo je do greške pri dobavljanju isplata' });
+//     }
+// });
+
 router.get('/zarade', async (req, res) => {
     try {
         const {
@@ -251,26 +363,94 @@ router.get('/zarade', async (req, res) => {
             ];
         }
 
-        const totalManagers = await menadzerRepo.count({ where: whereCondition });
+        // KORAK 1: Izračunaj zarade direktno u bazi (upit za sortiranje)
+        const queryBuilder = menadzerRepo.createQueryBuilder('menadzer')
+            .leftJoinAndSelect('menadzer.students', 'student')
+            .leftJoinAndSelect('menadzer.isplate', 'isplata')
+            .leftJoin('isplata.student', 'isplataStudent') // JOIN za filtriranje isplata po studentu
+            .select([
+                'menadzer.id',
+                'menadzer.ime',
+                'menadzer.prezime',
+                'student.id',
+                'student.ime',
+                'student.prezime',
+                'student.cenaSkolarine',
+                'student.procenatManagera',
+                'isplata.id',
+                'isplata.amount',
+                'isplata.studentId'
+            ]);
 
-        const menadzeriSaIsplatama = await menadzerRepo.find({
-            where: whereCondition,
-            relations: ['students', 'isplate'],
-            skip: (currentPage - 1) * itemsPerPage,
-            take: itemsPerPage,
-            order: { ime: 'ASC' }
+        if (searchTerm) {
+            queryBuilder.where('menadzer.ime LIKE :search OR menadzer.prezime LIKE :search', {
+                search: `%${searchTerm}%`
+            });
+        }
+
+        // KORAK 2: Dohvati sve menadžere sa potrebnim podacima
+        const sviMenadzeri = await queryBuilder.getMany();
+
+        // KORAK 3: Izračunaj zarade u memoriji (ipak moramo jer je kompleksna logika)
+        const menadzeriSaZaradama = sviMenadzeri.map(menadzer => {
+            // Grupiši isplate po studentu za brži pristup
+            const isplatePoStudentu : any= {};
+            menadzer.isplate?.forEach(isplata => {
+                if (isplata.studentId) {
+                    if (!isplatePoStudentu[isplata.studentId]) {
+                        isplatePoStudentu[isplata.studentId] = 0;
+                    }
+                    isplatePoStudentu[isplata.studentId] += Number(isplata.amount || 0);
+                }
+            });
+
+            // Izračunaj zarade za svakog studenta
+            let ukupnaZarada = 0;
+            let ukupnoPlaceno = 0;
+            
+            menadzer.students?.forEach(student => {
+                const zarada = Number(student.cenaSkolarine || 0) * (Number(student.procenatManagera || 0) / 100);
+                const placeno = isplatePoStudentu[student.id] || 0;
+                
+                ukupnaZarada += zarada;
+                ukupnoPlaceno += placeno;
+            });
+
+            return {
+                id: menadzer.id,
+                name: menadzer.ime + ' ' + menadzer.prezime,
+                brojStudenata: menadzer.students?.length || 0,
+                zarada: ukupnaZarada,
+                ukupnoPlaceno: ukupnoPlaceno,
+                ukupnoPreostalo: ukupnaZarada - ukupnoPlaceno,
+                original: menadzer,
+                isplatePoStudentu // Čuvamo za kasnije detalje
+            };
         });
 
-        const results = menadzeriSaIsplatama.map((x) => {
-            const zaradaPoUceniku = x.students.map(y => {
-                const ukupnaZarada = Number(y.cenaSkolarine) * (Number(y.procenatManagera) / 100);
-                const placenoZaUcenika = x.isplate && Array.isArray(x.isplate)
-                    ? x.isplate
-                        .filter(z => z.studentId === y.id) // Filtriraj po učeniku
-                        .reduce((sum, z) => sum + Number(z.amount || 0), 0)
-                    : 0;
+        // KORAK 4: Sortiraj globalno
+        menadzeriSaZaradama.sort((a, b) => {
+            if (b.zarada !== a.zarada) {
+                return b.zarada - a.zarada;
+            }
+            return b.brojStudenata - a.brojStudenata;
+        });
 
-                console.log(`Učenik ${y.ime} ${y.prezime}: Zarada=${ukupnaZarada}, Plaćeno=${placenoZaUcenika}`);
+        // KORAK 5: Paginacija
+        const totalManagers = menadzeriSaZaradama.length;
+        const totalPages = Math.ceil(totalManagers / itemsPerPage);
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        const endIndex = Math.min(startIndex + itemsPerPage, totalManagers);
+
+        const menadzeriZaStranicu = menadzeriSaZaradama.slice(startIndex, endIndex);
+
+        // KORAK 6: Pripremi detalje samo za menadžere na ovoj stranici
+        const detailedResults = menadzeriZaStranicu.map(item => {
+            const menadzer = item.original;
+            
+            const zaradaPoUceniku = menadzer.students?.map(student => {
+                const ukupnaZarada = Number(student.cenaSkolarine || 0) * (Number(student.procenatManagera || 0) / 100);
+                const placenoZaUcenika = item.isplatePoStudentu[student.id] || 0;
 
                 let statusPlacanja;
                 if (placenoZaUcenika === 0) {
@@ -282,54 +462,33 @@ router.get('/zarade', async (req, res) => {
                 }
 
                 return {
-                    idUcenika: y.id,
-                    imeIPrezimeUcenika: y.ime + ' ' + y.prezime,
+                    idUcenika: student.id,
+                    imeIPrezimeUcenika: student.ime + ' ' + student.prezime,
                     zarada: ukupnaZarada,
                     placeno: statusPlacanja,
                     placeniIznos: placenoZaUcenika,
                     preostalo: ukupnaZarada - placenoZaUcenika
                 };
-            }).sort((a, b) => b.zarada - a.zarada);
-
-            const ukupnaZarada = zaradaPoUceniku.reduce((sum, ucenik) => sum + ucenik.zarada, 0);
-            const ukupnoPlaceno = zaradaPoUceniku.reduce((sum, ucenik) => sum + ucenik.placeniIznos, 0);
+            }).sort((a, b) => b.zarada - a.zarada) || [];
 
             return {
-                id: x.id,
-                name: x.ime + ' ' + x.prezime,
-                brojStudenata: x.students.length,
-                zaradaPoUceniku: zaradaPoUceniku,
-                zarada: ukupnaZarada,
-                ukupnoPlaceno: ukupnoPlaceno,
-                ukupnoPreostalo: ukupnaZarada - ukupnoPlaceno
+                id: menadzer.id,
+                name: item.name,
+                brojStudenata: item.brojStudenata,
+                zaradaPoUceniku,
+                zarada: item.zarada,
+                ukupnoPlaceno: item.ukupnoPlaceno,
+                ukupnoPreostalo: item.ukupnoPreostalo
             };
         });
 
-        const sortedResult = results.sort((a, b) => b.zarada - a.zarada);
-
-        const totalPages = Math.ceil(totalManagers / itemsPerPage);
-
-        if (!menadzeriSaIsplatama || menadzeriSaIsplatama.length === 0) {
-            return res.status(200).json({
-                data: [],
-                pagination: {
-                    currentPage: currentPage,
-                    totalPages: 0,
-                    totalItems: 0,
-                    itemsPerPage: itemsPerPage,
-                    hasNextPage: false,
-                    hasPreviousPage: false
-                }
-            });
-        }
-
         return res.status(200).json({
-            data: sortedResult,
+            data: detailedResults,
             pagination: {
-                currentPage: currentPage,
-                totalPages: totalPages,
+                currentPage,
+                totalPages,
                 totalItems: totalManagers,
-                itemsPerPage: itemsPerPage,
+                itemsPerPage,
                 hasNextPage: currentPage < totalPages,
                 hasPreviousPage: currentPage > 1
             }

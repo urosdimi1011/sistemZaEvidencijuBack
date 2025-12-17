@@ -51,4 +51,16 @@ router.get('/occupations', async (req: Request, res: Response) => {
         res.status(500).json({ message: error.message });
     }
 });
+
+router.get('/:id', async (_req, res) => {
+    const id = _req.params.id as unknown as number;
+    const school = await schoolRepo.find({
+        where : {id: id}
+    });
+    const skola = school.map(m => ({
+        value: m.id,
+        label: `${m.name}`
+    }));
+    res.json(skola);
+});
 export default router
