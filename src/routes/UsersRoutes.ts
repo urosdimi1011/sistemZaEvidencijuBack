@@ -119,10 +119,10 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         // Validacija role
-        const validRoles = ['admin', 'school_manager', 'korisnik']
+        const validRoles = ['admin', 'school_manager', 'racunovodja']
         if (!validRoles.includes(role)) {
             return res.status(400).json({
-                error: 'Role mora biti: admin, school_manager ili korisnik'
+                error: 'Role mora biti: admin, school_manager ili racunovodja'
             })
         }
 
@@ -147,7 +147,6 @@ router.post('/', async (req: Request, res: Response) => {
 
         const sacuvanKorisnik = await userRepo.save(noviKorisnik)
 
-        // Dobijanje korisnika sa relacijama
         const korisnikSaRelacijama = await userRepo.findOne({
             where: { id: sacuvanKorisnik.id },
             relations: ['school'],
@@ -204,7 +203,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
         // Dodavanje polja koja treba ažurirati
         if (email !== undefined) updateData.email = email
         if (role !== undefined) {
-            const validRoles = ['admin', 'school_manager', 'korisnik']
+            const validRoles = ['admin', 'school_manager', 'racunovodja']
             if (!validRoles.includes(role)) {
                 return res.status(400).json({
                     error: 'Role mora biti: admin, school_manager ili korisnik'

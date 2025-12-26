@@ -32,7 +32,7 @@ export const schoolAccessMiddleware = ()=>{
     return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
         const { user } = req;
 
-        if (user?.role === 'admin') {
+        if (user?.role === 'admin' || user?.role === 'racunovodja') {
             return next();
         }
 

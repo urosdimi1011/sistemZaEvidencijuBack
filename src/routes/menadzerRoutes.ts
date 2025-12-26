@@ -1,233 +1,267 @@
-import { Router} from 'express'
-import { AppDataSource } from '../data-source'
-import { Menadzer } from '../entity/Menadzer'
-import {ManagerPayment} from "../entity/ManagerPayment";
-import {FindOptionsWhere, Like} from "typeorm";
-import {Student} from "../entity/Student";
+import { response, Router } from "express";
+import { AppDataSource } from "../data-source";
+import { Menadzer } from "../entity/Menadzer";
+import { ManagerPayment } from "../entity/ManagerPayment";
+import { FindOptionsWhere, Like, In } from "typeorm";
+import { Student } from "../entity/Student";
 import {
-    filterStudentsByRangeAndYear,
-    getAvailableYears,
-    getDetailedStats
+  filterStudentsByRangeAndYear,
+  getAvailableYears,
+  getDetailedStats,
 } from "../utiles/ManagerFunctions";
 
-const router = Router()
-const menadzerRepo = AppDataSource.getRepository(Menadzer)
+const router = Router();
+const menadzerRepo = AppDataSource.getRepository(Menadzer);
 const managerPaymentRepo = AppDataSource.getRepository(ManagerPayment);
 const studentRepo = AppDataSource.getRepository(Student);
 
-router.get('/', async (req, res) => {
-    const range = req.query.range as string;
-    const year = req.query.year as string;
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
+router.get("/", async (req, res) => {
+  const range = req.query.range as string;
+  const year = req.query.year as string;
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const search = req.query.search as string;
+
+  try {
+    const whereConditions = search
+      ? [{ ime: Like(`%${search}%`) }, { prezime: Like(`%${search}%`) }]
+      : {};
+
+    const subQuery = menadzerRepo
+      .createQueryBuilder("m")
+      .leftJoin("m.students", "s")
+      .select("m.id", "id")
+      .addSelect("COUNT(s.id)", "count")
+      .groupBy("m.id")
+      .orderBy("COUNT(s.id)", "DESC")
+      .addOrderBy("m.id", "ASC");
+
+    if (search) {
+      subQuery.where(whereConditions);
+    }
+
+    const allIdsQuery = await subQuery.getRawMany();
+    const allIds = allIdsQuery.map((r) => r.id);
+
+    const startIndex = (page - 1) * limit;
+    const endIndex = page * limit;
+    const pageIds = allIds.slice(startIndex, endIndex);
+
+    const menadzeri = await menadzerRepo.find({
+      where: { id: In(pageIds) },
+      relations: ["students", "students.occupation.school", "isplate"],
+    });
+
+    if (range || year) {
+        const menadzeriMap = new Map(menadzeri.map((m) => [m.id, m]));
+        const result = pageIds.map((id) => {
+          const m : any = menadzeriMap.get(id);
+          const filteredStudents = filterStudentsByRangeAndYear(
+            m.students,
+            range,
+            year
+          );
+          return {
+            managerId: m.id,
+            managerName: `${m.ime} ${m.prezime}`,
+            studentCount: filteredStudents.length,
+            totalRevenue: filteredStudents.reduce(
+              (sum, student) => Number(sum) + Number(student.cenaSkolarine),
+              0
+            ),
+            stats: getDetailedStats(filteredStudents, range, year),
+          };
+        });
+
+      const totalItems = await menadzerRepo.count({
+        where: search ? whereConditions : {},
+      });
+
+      const totalPages = Math.ceil(totalItems / limit);
+      res.json({
+        managers: result,
+        pagination: {
+          currentPage: page,
+          totalPages: totalPages,
+          totalItems: totalItems,
+          itemsPerPage: limit,
+          hasNextPage: endIndex < totalPages,
+          hasPrevPage: page > 1,
+        },
+        availableYears: getAvailableYears(menadzeri.flatMap((m) => m.students)),
+      });
+    } else {
+      if (pageIds.length === 0) {
+        res.json({
+          managers: [],
+        });
+        return;
+      }
+
+      const menadzeri = await menadzerRepo.find({
+        where: { id: In(pageIds) },
+        relations: ["students", "students.occupation.school", "isplate"],
+      });
+
+      const menadzeriMap = new Map(menadzeri.map((m) => [m.id, m]));
+      const result = pageIds
+        .map((id) => {
+          const m = menadzeriMap.get(id);
+          const countData = allIdsQuery.find((r) => r.id === id);
+          return {
+            ...m,
+            studentsCount: countData ? parseInt(countData.count) : 0,
+          };
+        })
+        .filter(Boolean);
+
+      const totalItems = await menadzerRepo.count({
+        where: search ? whereConditions : {},
+      });
+
+      const totalPages = Math.ceil(totalItems / limit);
+
+      res.json({
+        managers: result,
+        pagination: {
+          currentPage: page,
+          totalPages: totalPages,
+          totalItems: totalItems,
+          itemsPerPage: limit,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1,
+        },
+      });
+    }
+  } catch (error) {
+    console.error("Greška pri dohvatanju menadžera:", error);
+    res.status(500).json({ error: "Greška servera" });
+  }
+});
+router.get("/dropdown", async (req, res) => {
+  try {
     const search = req.query.search as string;
 
-    try {
-        // Kreiraj where uslove za pretragu
-        const whereConditions = search ? [
-            { ime: Like(`%${search}%`) },
-            { prezime: Like(`%${search}%`) }
-        ] : {};
+    const whereConditions = search
+      ? [{ ime: Like(`%${search}%`) }, { prezime: Like(`%${search}%`) }]
+      : {};
 
-        if (range || year) {
-            // Statistički prikaz - dohvati sve za statistike
-            const menadzeri = await menadzerRepo.find({
-                relations: ['students', 'isplate'],
-                ...(search && { where: whereConditions })
-            });
+    const menadzeri = await menadzerRepo.find({
+      select: ["id", "ime", "prezime"],
+      ...(search && { where: whereConditions }),
+      order: { ime: "ASC", prezime: "ASC" },
+    });
 
-            const result = menadzeri.map((menadzer) => {
-                const filteredStudents = filterStudentsByRangeAndYear(menadzer.students, range, year);
-                return {
-                    managerId: menadzer.id,
-                    managerName: `${menadzer.ime} ${menadzer.prezime}`,
-                    studentCount: filteredStudents.length,
-                    totalRevenue: filteredStudents.reduce((sum, student) =>
-                        Number(sum) + Number(student.cenaSkolarine), 0),
-                    stats: getDetailedStats(filteredStudents, range, year)
-                };
-            });
+    const dropdownData = menadzeri.map((m) => ({
+      value: m.id,
+      label: `${m.ime} ${m.prezime}`,
+    }));
 
-            const sortedResult = result.sort((a, b) => b.studentCount - a.studentCount);
-
-            // Straničenje za statistike (nakon filtriranja)
-            const startIndex = (page - 1) * limit;
-            const endIndex = startIndex + limit;
-            const paginatedResult = sortedResult.slice(startIndex, endIndex);
-
-
-            res.json({
-                managers: paginatedResult,
-                pagination: {
-                    currentPage: page,
-                    totalPages: Math.ceil(sortedResult.length / limit),
-                    totalItems: sortedResult.length,
-                    itemsPerPage: limit,
-                    hasNextPage: endIndex < sortedResult.length,
-                    hasPrevPage: page > 1
-                },
-                availableYears: getAvailableYears(menadzeri.flatMap(m => m.students))
-            });
-        } else {
-            // Obični prikaz sa findAndCount za efikasniju paginaciju
-            const [menadzeri, totalItems] = await menadzerRepo.findAndCount({
-                relations: ['students','students.occupation.school', 'isplate'],
-                ...(search && { where: whereConditions }),
-                skip: (page - 1) * limit,
-                take: limit,
-                order: { id: 'ASC' } // ili bilo koji drugi sort
-            });
-
-            const result = menadzeri.map(m => ({
-                id: m.id,
-                ime: m.ime,
-                prezime: m.prezime,
-                datumKreiranja: m.datumKreiranja,
-                datumIzmene: m.datumIzmene,
-                students: m.students,
-                studentsCount: m.students.length,
-            }));
-
-            const totalPages = Math.ceil(totalItems / limit);
-
-            res.json({
-                managers: result,
-                pagination: {
-                    currentPage: page,
-                    totalPages: totalPages,
-                    totalItems: totalItems,
-                    itemsPerPage: limit,
-                    hasNextPage: page < totalPages,
-                    hasPreviousPage: page > 1
-                }
-            });
-        }
-    } catch (error) {
-        console.error('Greška pri dohvatanju menadžera:', error);
-        res.status(500).json({ error: 'Greška servera' });
-    }
+    res.json(dropdownData);
+  } catch (error) {
+    console.error("Greška pri dohvatanju menadžera za dropdown:", error);
+    res.status(500).json({ error: "Greška servera" });
+  }
 });
-router.get('/dropdown', async (req, res) => {
-    try {
-        const search = req.query.search as string;
-
-        const whereConditions = search ? [
-            { ime: Like(`%${search}%`) },
-            { prezime: Like(`%${search}%`) }
-        ] : {};
-
-        const menadzeri = await menadzerRepo.find({
-            select: ['id', 'ime', 'prezime'],
-            ...(search && { where: whereConditions }),
-            order: { ime: 'ASC', prezime: 'ASC' }
-        });
-
-        const dropdownData = menadzeri.map(m => ({
-            value: m.id,
-            label: `${m.ime} ${m.prezime}`
-        }));
-
-        res.json(dropdownData);
-    } catch (error) {
-        console.error('Greška pri dohvatanju menadžera za dropdown:', error);
-        res.status(500).json({ error: 'Greška servera' });
+router.post("/", async (req, res) => {
+  try {
+    if (Array.isArray(req.body)) {
+      return res
+        .status(400)
+        .json({ error: "Očekivan je objekat menadžera, a ne niz" });
     }
+
+    const novi = menadzerRepo.create(req.body);
+    const sacuvan = await menadzerRepo.save(novi);
+
+    const menadzer = Array.isArray(sacuvan) ? sacuvan[0] : sacuvan;
+
+    const menadzerSaStudentima = await menadzerRepo.findOne({
+      where: { id: menadzer.id },
+      relations: ["students"],
+    });
+
+    if (!menadzerSaStudentima) {
+      return res.status(404).json({ error: "Menadžer nije pronađen" });
+    }
+
+    const result = {
+      id: menadzerSaStudentima.id,
+      ime: menadzerSaStudentima.ime,
+      prezime: menadzerSaStudentima.prezime,
+      datumKreiranja: menadzerSaStudentima.datumKreiranja,
+      datumIzmene: menadzerSaStudentima.datumIzmene,
+      students: menadzerSaStudentima.students,
+      studentsCount: menadzerSaStudentima.students.length,
+    };
+
+    res.status(201).json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: "Neispravni podaci za menadžera" });
+  }
 });
-router.post('/', async (req, res) => {
-    try {
-        if (Array.isArray(req.body)) {
-            return res.status(400).json({ error: 'Očekivan je objekat menadžera, a ne niz' });
-        }
+router.patch("/:id", async (req, res) => {
+  try {
+    const menadzerId = parseInt(req.params.id);
 
-        const novi = menadzerRepo.create(req.body);
-        const sacuvan = await menadzerRepo.save(novi);
+    const updateResult = await menadzerRepo.update(menadzerId, req.body);
 
-        const menadzer = Array.isArray(sacuvan) ? sacuvan[0] : sacuvan;
-
-        const menadzerSaStudentima = await menadzerRepo.findOne({
-            where: { id: menadzer.id },
-            relations: ['students']
-        });
-
-        if (!menadzerSaStudentima) {
-            return res.status(404).json({ error: 'Menadžer nije pronađen' });
-        }
-
-        const result = {
-            id: menadzerSaStudentima.id,
-            ime: menadzerSaStudentima.ime,
-            prezime: menadzerSaStudentima.prezime,
-            datumKreiranja: menadzerSaStudentima.datumKreiranja,
-            datumIzmene: menadzerSaStudentima.datumIzmene,
-            students: menadzerSaStudentima.students,
-            studentsCount: menadzerSaStudentima.students.length,
-        };
-
-        res.status(201).json(result);
-    } catch (err) {
-        console.error(err);
-        res.status(400).json({ error: 'Neispravni podaci za menadžera' });
+    if (updateResult.affected === 0) {
+      return res.status(404).json({ error: "Menadžer nije pronađen" });
     }
+
+    const updatedManager = await menadzerRepo.findOne({
+      where: { id: menadzerId },
+      relations: ["students"],
+    });
+
+    if (!updatedManager) {
+      return res.status(404).json({ message: "Menadžer nije pronađen" });
+    }
+
+    const result = {
+      id: updatedManager.id,
+      ime: updatedManager.ime,
+      prezime: updatedManager.prezime,
+      datumKreiranja: updatedManager.datumKreiranja,
+      datumIzmene: updatedManager.datumIzmene,
+      students: updatedManager.students,
+      studentsCount: updatedManager.students.length,
+    };
+
+    res.status(200).json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: "Neispravni podaci za menadžera" });
+  }
 });
-router.patch('/:id', async (req, res) => {
-    try {
-        const menadzerId = parseInt(req.params.id);
+router.get("/isplate/:id", async (req, res) => {
+  try {
+    const managerId = parseInt(req.params.id);
+    const studentId = Number(req.query.studentId);
 
+    const isplate = await managerPaymentRepo.find({
+      where: {
+        menadzer: { id: managerId },
+        student: { id: studentId },
+      },
+      relations: ["menadzer", "student"],
+    });
 
-
-        const updateResult = await menadzerRepo.update(menadzerId, req.body);
-
-        if (updateResult.affected === 0) {
-            return res.status(404).json({ error: 'Menadžer nije pronađen' });
-        }
-
-        const updatedManager = await menadzerRepo.findOne({
-            where: { id: menadzerId },
-            relations: ['students']
-        });
-
-        if (!updatedManager) {
-            return res.status(404).json({ message: 'Menadžer nije pronađen' });
-        }
-
-        const result = {
-            id: updatedManager.id,
-            ime: updatedManager.ime,
-            prezime: updatedManager.prezime,
-            datumKreiranja: updatedManager.datumKreiranja,
-            datumIzmene: updatedManager.datumIzmene,
-            students: updatedManager.students,
-            studentsCount: updatedManager.students.length,
-        };
-
-        res.status(200).json(result);
-    } catch (err) {
-        console.error(err);
-        res.status(400).json({ error: 'Neispravni podaci za menadžera' });
+    if (!isplate || isplate.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "Nema pronađenih isplata za ovog menadžera" });
     }
-});
-router.get('/isplate/:id', async (req, res) => {
-    try {
-        const managerId = parseInt(req.params.id);
-        const studentId = Number(req.query.studentId);
 
-        const isplate = await managerPaymentRepo.find({
-            where : {
-                menadzer : { id : managerId},
-                student: { id: studentId }
-            },
-            relations: ['menadzer', 'student']
-        })
-
-        if (!isplate || isplate.length === 0) {
-            return res.status(404).json({ message: 'Nema pronađenih isplata za ovog menadžera' });
-        }
-
-        return res.status(200).json(isplate);
-    } catch (err) {
-        console.error(err);
-        res.status(400).json({ error: 'Došlo je do greške pri dobavljanju isplata' });
-    }
+    return res.status(200).json(isplate);
+  } catch (err) {
+    console.error(err);
+    res
+      .status(400)
+      .json({ error: "Došlo je do greške pri dobavljanju isplata" });
+  }
 });
 // router.get('/zarade', async (req, res) => {
 //     try {
@@ -341,424 +375,438 @@ router.get('/isplate/:id', async (req, res) => {
 //     }
 // });
 
-router.get('/zarade', async (req, res) => {
-    try {
-        const {
-            godina,
-            page = '1',
-            limit = '10',
-            search = ''
-        } = req.query;
+router.get("/zarade", async (req, res) => {
+  //OVO BI MORALO DA SE OPTIMIZUJE KORISCENJEM SQL UPITA, ALI JE KOMPLEKSNO ZA NAPRAVITI JER TREBA I PAGINACIJA I SORTIRANJE
+  try {
+    const { godina, page = "1", limit = "10", search = "" } = req.query;
 
-        const currentPage = parseInt(page as string);
-        const itemsPerPage = parseInt(limit as string);
-        const searchTerm = (search as string).trim();
+    const currentPage = parseInt(page as string);
+    const itemsPerPage = parseInt(limit as string);
+    const searchTerm = (search as string).trim();
 
-        let whereCondition: any = {};
+    let whereCondition: any = {};
 
-        if (searchTerm) {
-            whereCondition = [
-                { ime: Like(`%${searchTerm}%`) },
-                { prezime: Like(`%${searchTerm}%`) }
-            ];
-        }
-
-        // KORAK 1: Izračunaj zarade direktno u bazi (upit za sortiranje)
-        const queryBuilder = menadzerRepo.createQueryBuilder('menadzer')
-            .leftJoinAndSelect('menadzer.students', 'student')
-            .leftJoinAndSelect('menadzer.isplate', 'isplata')
-            .leftJoin('isplata.student', 'isplataStudent') // JOIN za filtriranje isplata po studentu
-            .select([
-                'menadzer.id',
-                'menadzer.ime',
-                'menadzer.prezime',
-                'student.id',
-                'student.ime',
-                'student.prezime',
-                'student.cenaSkolarine',
-                'student.procenatManagera',
-                'isplata.id',
-                'isplata.amount',
-                'isplata.studentId'
-            ]);
-
-        if (searchTerm) {
-            queryBuilder.where('menadzer.ime LIKE :search OR menadzer.prezime LIKE :search', {
-                search: `%${searchTerm}%`
-            });
-        }
-
-        // KORAK 2: Dohvati sve menadžere sa potrebnim podacima
-        const sviMenadzeri = await queryBuilder.getMany();
-
-        // KORAK 3: Izračunaj zarade u memoriji (ipak moramo jer je kompleksna logika)
-        const menadzeriSaZaradama = sviMenadzeri.map(menadzer => {
-            // Grupiši isplate po studentu za brži pristup
-            const isplatePoStudentu : any= {};
-            menadzer.isplate?.forEach(isplata => {
-                if (isplata.studentId) {
-                    if (!isplatePoStudentu[isplata.studentId]) {
-                        isplatePoStudentu[isplata.studentId] = 0;
-                    }
-                    isplatePoStudentu[isplata.studentId] += Number(isplata.amount || 0);
-                }
-            });
-
-            // Izračunaj zarade za svakog studenta
-            let ukupnaZarada = 0;
-            let ukupnoPlaceno = 0;
-            
-            menadzer.students?.forEach(student => {
-                const zarada = Number(student.cenaSkolarine || 0) * (Number(student.procenatManagera || 0) / 100);
-                const placeno = isplatePoStudentu[student.id] || 0;
-                
-                ukupnaZarada += zarada;
-                ukupnoPlaceno += placeno;
-            });
-
-            return {
-                id: menadzer.id,
-                name: menadzer.ime + ' ' + menadzer.prezime,
-                brojStudenata: menadzer.students?.length || 0,
-                zarada: ukupnaZarada,
-                ukupnoPlaceno: ukupnoPlaceno,
-                ukupnoPreostalo: ukupnaZarada - ukupnoPlaceno,
-                original: menadzer,
-                isplatePoStudentu // Čuvamo za kasnije detalje
-            };
-        });
-
-        // KORAK 4: Sortiraj globalno
-        menadzeriSaZaradama.sort((a, b) => {
-            if (b.zarada !== a.zarada) {
-                return b.zarada - a.zarada;
-            }
-            return b.brojStudenata - a.brojStudenata;
-        });
-
-        // KORAK 5: Paginacija
-        const totalManagers = menadzeriSaZaradama.length;
-        const totalPages = Math.ceil(totalManagers / itemsPerPage);
-        const startIndex = (currentPage - 1) * itemsPerPage;
-        const endIndex = Math.min(startIndex + itemsPerPage, totalManagers);
-
-        const menadzeriZaStranicu = menadzeriSaZaradama.slice(startIndex, endIndex);
-
-        // KORAK 6: Pripremi detalje samo za menadžere na ovoj stranici
-        const detailedResults = menadzeriZaStranicu.map(item => {
-            const menadzer = item.original;
-            
-            const zaradaPoUceniku = menadzer.students?.map(student => {
-                const ukupnaZarada = Number(student.cenaSkolarine || 0) * (Number(student.procenatManagera || 0) / 100);
-                const placenoZaUcenika = item.isplatePoStudentu[student.id] || 0;
-
-                let statusPlacanja;
-                if (placenoZaUcenika === 0) {
-                    statusPlacanja = 'nije_placeno';
-                } else if (placenoZaUcenika < ukupnaZarada) {
-                    statusPlacanja = 'delimicno_placeno';
-                } else {
-                    statusPlacanja = 'u_punosti_placeno';
-                }
-
-                return {
-                    idUcenika: student.id,
-                    imeIPrezimeUcenika: student.ime + ' ' + student.prezime,
-                    zarada: ukupnaZarada,
-                    placeno: statusPlacanja,
-                    placeniIznos: placenoZaUcenika,
-                    preostalo: ukupnaZarada - placenoZaUcenika
-                };
-            }).sort((a, b) => b.zarada - a.zarada) || [];
-
-            return {
-                id: menadzer.id,
-                name: item.name,
-                brojStudenata: item.brojStudenata,
-                zaradaPoUceniku,
-                zarada: item.zarada,
-                ukupnoPlaceno: item.ukupnoPlaceno,
-                ukupnoPreostalo: item.ukupnoPreostalo
-            };
-        });
-
-        return res.status(200).json({
-            data: detailedResults,
-            pagination: {
-                currentPage,
-                totalPages,
-                totalItems: totalManagers,
-                itemsPerPage,
-                hasNextPage: currentPage < totalPages,
-                hasPreviousPage: currentPage > 1
-            }
-        });
-
-    } catch (err) {
-        console.error(err);
-        res.status(400).json({ error: 'Došlo je do greške pri dobavljanju isplata' });
+    if (searchTerm) {
+      whereCondition = [
+        { ime: Like(`%${searchTerm}%`) },
+        { prezime: Like(`%${searchTerm}%`) },
+      ];
     }
-});
-router.get('/:id', async (req, res) => {
-    const id = req.params.id as unknown as number;
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const search = req.query.search as string || '';
-    const skip = (page - 1) * limit;
-    
-    try {
-        let whereCondition: any = {};
 
-        if (search) {
-            whereCondition = [
-                { ime: Like(`%${search.trim()}%`), menadzer: { id: id } },
-                { prezime: Like(`%${search.trim()}%`), menadzer: { id: id } },
-            ];
-        } else {
-            whereCondition = { menadzer: { id: id }} 
+    // KORAK 1: Izračunaj zarade direktno u bazi (upit za sortiranje)
+    const queryBuilder = menadzerRepo
+      .createQueryBuilder("menadzer")
+      .leftJoinAndSelect("menadzer.students", "student")
+      .leftJoinAndSelect("menadzer.isplate", "isplata")
+      .leftJoin("isplata.student", "isplataStudent") // JOIN za filtriranje isplata po studentu
+      .select([
+        "menadzer.id",
+        "menadzer.ime",
+        "menadzer.prezime",
+        "student.id",
+        "student.ime",
+        "student.prezime",
+        "student.cenaSkolarine",
+        "student.procenatManagera",
+        "isplata.id",
+        "isplata.amount",
+        "isplata.studentId",
+      ])
+
+    if (searchTerm) {
+      queryBuilder.where(
+        "menadzer.ime LIKE :search OR menadzer.prezime LIKE :search",
+        {
+          search: `%${searchTerm}%`,
         }
-        
-        // Glavni upit sa paginacijom
-        const [students, total] = await studentRepo.findAndCount({
-            where: whereCondition,
-            relations: ['managerPayouts', 'occupation.school'],
-            skip: skip,
-            take: limit,
-            order: { createdAt: 'DESC' }
-        });
-
-        // Efikasan upit samo za statistiku škola
-        const queryBuilder = studentRepo.createQueryBuilder('student')
-            .leftJoin('student.occupation', 'occupation')
-            .leftJoin('occupation.school', 'school')
-            .select('school.id', 'schoolId')
-            .addSelect('school.name', 'schoolName')
-            .addSelect('COUNT(student.id)', 'numberStudents')
-            .where('student.managerId = :id', { id })
-            .groupBy('school.id')
-            .addGroupBy('school.name');
-
-        if (search) {
-            queryBuilder.andWhere(
-                '(student.ime LIKE :search OR student.prezime LIKE :search)',
-                { search: `%${search.trim()}%` }
-            );
-        }
-
-        const numberOfSchools = await queryBuilder.getRawMany();
-        
-        // if (students && students.length > 0) {
-            const results = students.map((ucenik) => {
-                return {
-                    id: ucenik.id,
-                    imeIPrezime: ucenik.ime + ' ' + ucenik.prezime,
-                    zanimanje: ucenik.occupation.name,
-                    skola: ucenik.occupation.school.name
-                }
-            });
-            
-            const totalPages = Math.ceil(total / limit);
-            
-            res.json({
-                students: results,
-                totalStudents: total,
-                numberOfSchools: numberOfSchools.map(stat => ({
-                    school: stat.schoolName,
-                    numberStudents: parseInt(stat.numberStudents)
-                })),
-                pagination: {
-                    currentPage: page,
-                    totalPages: totalPages,
-                    totalStudents: total,
-                    studentsPerPage: limit,
-                    hasNextPage: page < totalPages,
-                    hasPreviousPage: page > 1
-                }
-            });
-        // } 
-        // else {
-        //     res.status(404).json({ "message": "Menadžer nema učenike ili nije pronađen" });
-        // }
-
-    } catch (error) {
-        console.error('Greška pri dohvatanju menadžera:', error);
-        res.status(500).json({ error: 'Greška servera' });
+      );
     }
-});
-router.get('/:id/students/details', async (req, res) => {
-    try{
-        const managerId = parseInt(req.params.id);
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 10;
-        const search = req.query.search as string || '';
-        const skip = (page - 1) * limit;
 
-        const searchTerm = search.trim();
-        let whereCondition: any = {};
+    // KORAK 2: Dohvati sve menadžere sa potrebnim podacima
+    const sviMenadzeri = await queryBuilder.getMany();
 
-        if (searchTerm) {
-            whereCondition = [
-                { ime: Like(`%${searchTerm}%`), menadzer: { id: managerId } },
-                { prezime: Like(`%${searchTerm}%`), menadzer: { id: managerId } },
-            ];
+    // KORAK 3: Izračunaj zarade u memoriji (ipak moramo jer je kompleksna logika)
+    const menadzeriSaZaradama = sviMenadzeri.map((menadzer) => {
+      // Grupiši isplate po studentu za brži pristup
+      const isplatePoStudentu: any = {};
+      menadzer.isplate?.forEach((isplata) => {
+        if (isplata.studentId) {
+          if (!isplatePoStudentu[isplata.studentId]) {
+            isplatePoStudentu[isplata.studentId] = 0;
+          }
+          isplatePoStudentu[isplata.studentId] += Number(isplata.amount || 0);
         }
-        else{
-            whereCondition = { menadzer: { id: managerId }} 
-        }
+      });
 
-        const menadzer = await menadzerRepo.findOne({
-            where: { id: managerId },
-            relations: ['isplate']
-        });
+      // Izračunaj zarade za svakog studenta
+      let ukupnaZarada = 0;
+      let ukupnoPlaceno = 0;
 
-        const allStudents = await studentRepo.find({
-            where: whereCondition,
-            relations: ['managerPayouts', 'occupation.school']
-        });
+      menadzer.students?.forEach((student) => {
+        const zarada =
+          Number(student.cenaSkolarine || 0) *
+          (Number(student.procenatManagera || 0) / 100);
+        const placeno = isplatePoStudentu[student.id] || 0;
 
-        let totalAmount = 0;
-        allStudents.forEach(student => {
-            const ukupnaZarada = Number(student.cenaSkolarine) * (Number(student.procenatManagera) / 100);
-            totalAmount += ukupnaZarada;
-        });
+        ukupnaZarada += zarada;
+        ukupnoPlaceno += placeno;
+      });
 
-        const [students, total] = await studentRepo.findAndCount({
-            where: whereCondition,
-            relations: ['managerPayouts','occupation.school'],
-            skip: skip,
-            take: limit,
-            order: { id: 'ASC' }
-        });
+      return {
+        id: menadzer.id,
+        name: menadzer.ime + " " + menadzer.prezime,
+        brojStudenata: menadzer.students?.length || 0,
+        zarada: ukupnaZarada,
+        ukupnoPlaceno: ukupnoPlaceno,
+        ukupnoPreostalo: ukupnaZarada - ukupnoPlaceno,
+        original: menadzer,
+        isplatePoStudentu, // Čuvamo za kasnije detalje
+      };
+    });
 
-        const zaradaPoUceniku = students.map(y => {
-            const ukupnaZarada = Number(y.cenaSkolarine) * (Number(y.procenatManagera) / 100);
-            const placenoZaUcenika = menadzer?.isplate && Array.isArray(menadzer.isplate)
-                ? menadzer.isplate
-                    .filter(z => z.studentId === y.id)
-                    .reduce((sum, z) => sum + Number(z.amount || 0), 0)
-                : 0;
+    menadzeriSaZaradama.sort((a, b) => {
+    //   if (b.zarada !== a.zarada) {
+    //     return b.zarada - a.zarada;
+    //   }
+      return b.brojStudenata - a.brojStudenata;
+    });
+
+    // KORAK 5: Paginacija
+    const totalManagers = menadzeriSaZaradama.length;
+    const totalPages = Math.ceil(totalManagers / itemsPerPage);
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = Math.min(startIndex + itemsPerPage, totalManagers);
+
+    const menadzeriZaStranicu = menadzeriSaZaradama.slice(startIndex, endIndex);
+
+    // KORAK 6: Pripremi detalje samo za menadžere na ovoj stranici
+    const detailedResults = menadzeriZaStranicu.map((item) => {
+      const menadzer = item.original;
+
+      const zaradaPoUceniku =
+        menadzer.students
+          ?.map((student) => {
+            const ukupnaZarada =
+              Number(student.cenaSkolarine || 0) *
+              (Number(student.procenatManagera || 0) / 100);
+            const placenoZaUcenika = item.isplatePoStudentu[student.id] || 0;
+
             let statusPlacanja;
             if (placenoZaUcenika === 0) {
-                statusPlacanja = 'nije_placeno';
+              statusPlacanja = "nije_placeno";
             } else if (placenoZaUcenika < ukupnaZarada) {
-                statusPlacanja = 'delimicno_placeno';
+              statusPlacanja = "delimicno_placeno";
             } else {
-                statusPlacanja = 'u_punosti_placeno';
+              statusPlacanja = "u_punosti_placeno";
             }
 
             return {
-                idUcenika: y.id,
-                imeIPrezimeUcenika: y.ime + ' ' + y.prezime,
-                zarada: ukupnaZarada,
-                placeno: statusPlacanja,
-                zanimanje: y.occupation.name,
-                skola : y.occupation.school.name,
-                placeniIznos: placenoZaUcenika,
-                preostalo: ukupnaZarada - placenoZaUcenika
+              idUcenika: student.id,
+              imeIPrezimeUcenika: student.ime + " " + student.prezime,
+              zarada: ukupnaZarada,
+              placeno: statusPlacanja,
+              placeniIznos: placenoZaUcenika,
+              preostalo: ukupnaZarada - placenoZaUcenika,
             };
-        }).sort((a, b) => b.zarada - a.zarada);
+          })
+          .sort((a, b) => b.zarada - a.zarada) || [];
 
-        const totalPages = Math.ceil(total / limit);
+      return {
+        id: menadzer.id,
+        name: item.name,
+        brojStudenata: item.brojStudenata,
+        zaradaPoUceniku,
+        zarada: item.zarada,
+        ukupnoPlaceno: item.ukupnoPlaceno,
+        ukupnoPreostalo: item.ukupnoPreostalo,
+      };
+    });
 
-         const placenoZaUcenika = menadzer?.isplate && Array.isArray(menadzer.isplate)
-                ? menadzer.isplate
-                    .reduce((sum, z) => sum + Number(z.amount || 0), 0)
-                : 0;
-
-        res.json({
-            menadzer: {
-                id: menadzer?.id,
-                name: menadzer?.ime + ' ' + menadzer?.prezime,
-                ukupnaZarada: totalAmount,
-                ukupnoPlaceno : placenoZaUcenika
-            },
-            data: zaradaPoUceniku,
-            pagination: {
-                currentPage: page,
-                totalPages: totalPages,
-                totalStudents: total,
-                studentsPerPage: limit,
-                hasNextPage: page < totalPages,
-                hasPreviousPage: page > 1
-            }
-        });
-    }
-    catch(err){
-        console.log(err);
-        res.status(400).json({ error: 'Došlo je do greške pri dobavljanju isplata' });
-    }
-})
-
-router.delete('/:id', async (req, res) => {
-    const queryRunner = AppDataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
-    try {
-        const { id } = req.params;
-
-        // Validacija ID-a
-        if (!id || isNaN(parseInt(id))) {
-            await queryRunner.rollbackTransaction();
-            return res.status(400).json({
-                success: false,
-                message: 'Nevalidan ID studenta'
-            });
-        }
-
-        const menadzerId = parseInt(id);
-
-        // Provera postojanja studenta
-        const menadzer = await queryRunner.manager.findOne(Menadzer, {
-            where: { id: menadzerId } as FindOptionsWhere<Menadzer>
-        });
-
-        if (!menadzer) {
-            await queryRunner.rollbackTransaction();
-            return res.status(404).json({
-                success: false,
-                message: 'Menadzer nije pronađen'
-            });
-        }
-
-        // 1. PRVO obrišite sve uplate studenta
-        const deletePaymentsResult = await queryRunner.manager.delete(ManagerPayment, {
-            student: { id: menadzerId } // Pretpostavljam da payment ima relaciju 'student'
-        });
-
-        console.log(`Obrisano ${deletePaymentsResult.affected} uplata studenta`);
-
-        // 2. ONDA obrišite studenta
-        await queryRunner.manager.remove(Menadzer, menadzer);
-
-        // Potvrda transakcije
-        await queryRunner.commitTransaction();
-
-        // Uspešan odgovor
-        res.status(200).json({
-            success: true,
-            message: 'Menadzer i sve njegove uplate su uspešno obrisani',
-            data: {
-                id: menadzerId,
-                name: menadzer.ime,
-                deletedPaymentsCount: deletePaymentsResult.affected
-            }
-        });
-
-    } catch (error :any) {
-        // Rollback u slučaju greške
-        await queryRunner.rollbackTransaction();
-
-        console.error('Greška pri brisanju studenta:', error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Došlo je do greške pri brisanju studenta',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
-    } finally {
-        await queryRunner.release();
-    }
-
+    return res.status(200).json({
+      data: detailedResults,
+      pagination: {
+        currentPage,
+        totalPages,
+        totalItems: totalManagers,
+        itemsPerPage,
+        hasNextPage: currentPage < totalPages,
+        hasPreviousPage: currentPage > 1,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res
+      .status(400)
+      .json({ error: "Došlo je do greške pri dobavljanju isplata" });
+  }
 });
-export default router
+router.get("/:id", async (req, res) => {
+  const id = req.params.id as unknown as number;
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const search = (req.query.search as string) || "";
+  const skip = (page - 1) * limit;
+
+  try {
+    let whereCondition: any = {};
+
+    if (search) {
+      whereCondition = [
+        { ime: Like(`%${search.trim()}%`), menadzer: { id: id } },
+        { prezime: Like(`%${search.trim()}%`), menadzer: { id: id } },
+      ];
+    } else {
+      whereCondition = { menadzer: { id: id } };
+    }
+
+    // Glavni upit sa paginacijom
+    const [students, total] = await studentRepo.findAndCount({
+      where: whereCondition,
+      relations: ["managerPayouts", "occupation.school"],
+      skip: skip,
+      take: limit,
+      order: { createdAt: "DESC" },
+    });
+
+    // Efikasan upit samo za statistiku škola
+    const queryBuilder = studentRepo
+      .createQueryBuilder("student")
+      .leftJoin("student.occupation", "occupation")
+      .leftJoin("occupation.school", "school")
+      .select("school.id", "schoolId")
+      .addSelect("school.name", "schoolName")
+      .addSelect("COUNT(student.id)", "numberStudents")
+      .where("student.managerId = :id", { id })
+      .groupBy("school.id")
+      .addGroupBy("school.name");
+
+    if (search) {
+      queryBuilder.andWhere(
+        "(student.ime LIKE :search OR student.prezime LIKE :search)",
+        { search: `%${search.trim()}%` }
+      );
+    }
+
+    const numberOfSchools = await queryBuilder.getRawMany();
+
+    // if (students && students.length > 0) {
+    const results = students.map((ucenik) => {
+      return {
+        id: ucenik.id,
+        imeIPrezime: ucenik.ime + " " + ucenik.prezime,
+        zanimanje: ucenik.occupation.name,
+        skola: ucenik.occupation.school.name,
+      };
+    });
+
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      students: results,
+      totalStudents: total,
+      numberOfSchools: numberOfSchools.map((stat) => ({
+        school: stat.schoolName,
+        numberStudents: parseInt(stat.numberStudents),
+      })),
+      pagination: {
+        currentPage: page,
+        totalPages: totalPages,
+        totalStudents: total,
+        studentsPerPage: limit,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1,
+      },
+    });
+    // }
+    // else {
+    //     res.status(404).json({ "message": "Menadžer nema učenike ili nije pronađen" });
+    // }
+  } catch (error) {
+    console.error("Greška pri dohvatanju menadžera:", error);
+    res.status(500).json({ error: "Greška servera" });
+  }
+});
+router.get("/:id/students/details", async (req, res) => {
+  try {
+    const managerId = parseInt(req.params.id);
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const search = (req.query.search as string) || "";
+    const skip = (page - 1) * limit;
+
+    const searchTerm = search.trim();
+    let whereCondition: any = {};
+
+    if (searchTerm) {
+      whereCondition = [
+        { ime: Like(`%${searchTerm}%`), menadzer: { id: managerId } },
+        { prezime: Like(`%${searchTerm}%`), menadzer: { id: managerId } },
+      ];
+    } else {
+      whereCondition = { menadzer: { id: managerId } };
+    }
+
+    const menadzer = await menadzerRepo.findOne({
+      where: { id: managerId },
+      relations: ["isplate"],
+    });
+
+    const allStudents = await studentRepo.find({
+      where: whereCondition,
+      relations: ["managerPayouts", "occupation.school"],
+    });
+
+    let totalAmount = 0;
+    allStudents.forEach((student) => {
+      const ukupnaZarada =
+        Number(student.cenaSkolarine) *
+        (Number(student.procenatManagera) / 100);
+      totalAmount += ukupnaZarada;
+    });
+
+    const [students, total] = await studentRepo.findAndCount({
+      where: whereCondition,
+      relations: ["managerPayouts", "occupation.school"],
+      skip: skip,
+      take: limit,
+      order: { id: "ASC" },
+    });
+
+    const zaradaPoUceniku = students
+      .map((y) => {
+        const ukupnaZarada =
+          Number(y.cenaSkolarine) * (Number(y.procenatManagera) / 100);
+        const placenoZaUcenika =
+          menadzer?.isplate && Array.isArray(menadzer.isplate)
+            ? menadzer.isplate
+                .filter((z) => z.studentId === y.id)
+                .reduce((sum, z) => sum + Number(z.amount || 0), 0)
+            : 0;
+        let statusPlacanja;
+        if (placenoZaUcenika === 0) {
+          statusPlacanja = "nije_placeno";
+        } else if (placenoZaUcenika < ukupnaZarada) {
+          statusPlacanja = "delimicno_placeno";
+        } else {
+          statusPlacanja = "u_punosti_placeno";
+        }
+
+        return {
+          idUcenika: y.id,
+          imeIPrezimeUcenika: y.ime + " " + y.prezime,
+          zarada: ukupnaZarada,
+          placeno: statusPlacanja,
+          zanimanje: y.occupation.name,
+          skola: y.occupation.school.name,
+          placeniIznos: placenoZaUcenika,
+          preostalo: ukupnaZarada - placenoZaUcenika,
+        };
+      })
+      .sort((a, b) => b.zarada - a.zarada);
+
+    const totalPages = Math.ceil(total / limit);
+
+    const placenoZaUcenika =
+      menadzer?.isplate && Array.isArray(menadzer.isplate)
+        ? menadzer.isplate.reduce((sum, z) => sum + Number(z.amount || 0), 0)
+        : 0;
+
+    res.json({
+      menadzer: {
+        id: menadzer?.id,
+        name: menadzer?.ime + " " + menadzer?.prezime,
+        ukupnaZarada: totalAmount,
+        ukupnoPlaceno: placenoZaUcenika,
+      },
+      data: zaradaPoUceniku,
+      pagination: {
+        currentPage: page,
+        totalPages: totalPages,
+        totalStudents: total,
+        studentsPerPage: limit,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1,
+      },
+    });
+  } catch (err) {
+    console.log(err);
+    res
+      .status(400)
+      .json({ error: "Došlo je do greške pri dobavljanju isplata" });
+  }
+});
+
+router.delete("/:id", async (req, res) => {
+  const queryRunner = AppDataSource.createQueryRunner();
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
+  try {
+    const { id } = req.params;
+
+    // Validacija ID-a
+    if (!id || isNaN(parseInt(id))) {
+      await queryRunner.rollbackTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "Nevalidan ID studenta",
+      });
+    }
+
+    const menadzerId = parseInt(id);
+
+    // Provera postojanja studenta
+    const menadzer = await queryRunner.manager.findOne(Menadzer, {
+      where: { id: menadzerId } as FindOptionsWhere<Menadzer>,
+    });
+
+    if (!menadzer) {
+      await queryRunner.rollbackTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "Menadzer nije pronađen",
+      });
+    }
+
+    // 1. PRVO obrišite sve uplate studenta
+    const deletePaymentsResult = await queryRunner.manager.delete(
+      ManagerPayment,
+      {
+        student: { id: menadzerId }, // Pretpostavljam da payment ima relaciju 'student'
+      }
+    );
+
+    console.log(`Obrisano ${deletePaymentsResult.affected} uplata studenta`);
+
+    // 2. ONDA obrišite studenta
+    await queryRunner.manager.remove(Menadzer, menadzer);
+
+    // Potvrda transakcije
+    await queryRunner.commitTransaction();
+
+    // Uspešan odgovor
+    res.status(200).json({
+      success: true,
+      message: "Menadzer i sve njegove uplate su uspešno obrisani",
+      data: {
+        id: menadzerId,
+        name: menadzer.ime,
+        deletedPaymentsCount: deletePaymentsResult.affected,
+      },
+    });
+  } catch (error: any) {
+    // Rollback u slučaju greške
+    await queryRunner.rollbackTransaction();
+
+    console.error("Greška pri brisanju studenta:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Došlo je do greške pri brisanju studenta",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  } finally {
+    await queryRunner.release();
+  }
+});
+export default router;

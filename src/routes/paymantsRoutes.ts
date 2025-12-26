@@ -53,6 +53,7 @@ router.post('/:id', async (_req, res) => {
         const studentId = parseInt(_req.params.id);
         const iznosZaUplatu = parseFloat(_req.body.iznosZaUplatu);
         const datumUplateString = _req.body.datumUplate;
+        const note = _req.body.note || null;
 
         // Validacija
         if (isNaN(studentId) || isNaN(iznosZaUplatu) || iznosZaUplatu <= 0) {
@@ -100,6 +101,7 @@ router.post('/:id', async (_req, res) => {
         payment.amount = iznosZaUplatu;
         payment.student = student;
         payment.paidAt = datumUplate;
+        payment.note = note;
 
         await paymantRepo.save(payment);
 
@@ -112,7 +114,8 @@ router.post('/:id', async (_req, res) => {
             payment: {
                 id: payment.id,
                 amount: payment.amount,
-                paidAt: payment.paidAt
+                paidAt: payment.paidAt,
+                note: payment.note
             },
             student: {
                 id: student.id,
@@ -133,6 +136,7 @@ router.post('/:id', async (_req, res) => {
 router.patch('/:id', async (_req, res) => {
     const paymentId = parseInt(_req.params.id);
     const iznosUplate = parseFloat(_req.body.iznosZaUplatu);
+    const note = _req.body.note || null;
     const datumUplateString = _req.body.datumUplate;
 
     try {
@@ -175,10 +179,8 @@ router.patch('/:id', async (_req, res) => {
         
         const totalDebt = Number(student.cenaSkolarine) + (student.literature || 0);
         
-        // Nova nominalna uplata
         const newTotalPaid = totalPaidWithoutCurrent + iznosUplate;
         
-        // Efektivno pokriveno sa novim iznosom
         const effectiveCovered = newTotalPaid - totalPaidToManager;
         
         // Provera da efektivna uplata ne premašuje dug
@@ -190,12 +192,11 @@ router.patch('/:id', async (_req, res) => {
             });
         }
 
-        // Ažuriraj uplatu
         payment.amount = iznosUplate;
         payment.paidAt = datumUplate;
+        payment.note = note;
         await paymantRepo.save(payment);
 
-        // Kalkulacija nakon izmene
         const remainingAmount = totalDebt - effectiveCovered;
 
         res.status(200).json({
@@ -203,7 +204,8 @@ router.patch('/:id', async (_req, res) => {
             payment: {
                 id: payment.id,
                 iznosUplate: payment.amount,
-                datumUplate: payment.paidAt
+                datumUplate: payment.paidAt,
+                note: payment.note
             },
             student: {
                 id: student.id,

@@ -16,11 +16,11 @@ export class Payment {
     @Column("decimal", { precision: 10, scale: 2 })
     amount!: number;
 
-    // @Column("varchar", {
-    //     nullable: true,
-    //     default: null
-    // })
-    // note!: string;
+    @Column("varchar", {
+        nullable: true,
+        default: null
+    })
+    note!: string;
 
 
     // Datum uplate
