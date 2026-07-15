@@ -85,7 +85,7 @@ router.get("/", async (req, res) => {
           totalPages: totalPages,
           totalItems: totalItems,
           itemsPerPage: limit,
-          hasNextPage: endIndex < totalPages,
+          hasNextPage: page < totalPages,
           hasPrevPage: page > 1,
         },
         availableYears: getAvailableYears(menadzeri.flatMap((m) => m.students)),
@@ -768,11 +768,11 @@ router.delete("/:id", async (req, res) => {
       });
     }
 
-    // 1. PRVO obrišite sve uplate studenta
+    // 1. PRVO obrišite sve isplate ovog menadžera
     const deletePaymentsResult = await queryRunner.manager.delete(
       ManagerPayment,
       {
-        student: { id: menadzerId }, // Pretpostavljam da payment ima relaciju 'student'
+        menadzer: { id: menadzerId },
       }
     );
 

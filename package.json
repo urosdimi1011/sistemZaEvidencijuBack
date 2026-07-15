@@ -15,7 +15,8 @@
     "migration:run": "npm run typeorm -- -d src/data-source.ts migration:run",
     "migration:revert": "npm run typeorm -- -d src/data-source.ts migration:revert",
     "seed": "ts-node src/seed/seedForStudens.ts",
-    "seed:schools": "ts-node src/seed/seedSchoolsAndOccupations.ts"
+    "seed:schools": "ts-node src/seed/seedSchoolsAndOccupations.ts",
+    "seed:dositej": "ts-node src/seed/addDositejOccupations.ts"
   },
   "keywords": [],
   "author": "",

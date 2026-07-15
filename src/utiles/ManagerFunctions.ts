@@ -1,14 +1,20 @@
 // Funkcija za filtriranje studenata po intervalu
 import {Student} from "../entity/Student";
+import {
+    getSchoolYearForDate,
+    getSchoolYearLabel,
+    getSchoolYearMonths,
+    getSchoolYearRange,
+} from "./schoolYear";
+
 export function filterStudentsByRangeAndYear(students: any[], range: string, year: string): any[] {
     let filteredStudents = students;
 
-    // Prvo filtriraj po godini ako je postavljena
+    // Prvo filtriraj po ŠKOLSKOJ godini ako je postavljena (year = početna godina, npr. 2025 = 2025/26)
     if (year && year !== 'all') {
         const targetYear = parseInt(year);
         filteredStudents = filteredStudents.filter(s => {
-            const studentYear = new Date(s.createdAt).getFullYear();
-            return studentYear === targetYear;
+            return getSchoolYearForDate(new Date(s.createdAt)) === targetYear;
         });
     }
 
@@ -23,16 +29,17 @@ export  function filterStudentsByRange(students: any[], range: string): any[] {
     const now = new Date();
 
     switch (range) {
-        case 'year':
-            // Tekuća godina (1. januar - danas)
-            const startOfYear = new Date(now.getFullYear(), 0, 1);
-            return students.filter(s => new Date(s.createdAt).getTime() >= startOfYear.getTime());
+        case 'year': {
+            // Tekuća ŠKOLSKA godina (1. septembar - danas)
+            const { start } = getSchoolYearRange(getSchoolYearForDate(now));
+            return students.filter(s => new Date(s.createdAt).getTime() >= start.getTime());
+        }
 
-        case 'month':
+        case 'month': {
             // Tekući mesec (1. u mesecu - danas)
             const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
             return students.filter(s => new Date(s.createdAt).getTime() >= startOfMonth.getTime());
-
+        }
 
         default:
             return students; // 'all' - svi studenti
@@ -44,10 +51,10 @@ export  function filterStudentsByRange(students: any[], range: string): any[] {
 export function getDetailedStats(students: any[], range: string, year: string): any {
     const stats: any = {};
 
-    // Uvek prikazuj godišnju statistiku
+    // Uvek prikazuj statistiku po školskim godinama
     stats.yearly = getYearlyStats(students);
 
-    // Ako je izabrana specifična godina, prikaži mesečnu statistiku za tu godinu
+    // Ako je izabrana specifična školska godina, prikaži mesečnu statistiku za tu godinu
     if (year && year !== 'all') {
         stats.monthly = getMonthlyStatsForYear(students, parseInt(year));
     }
@@ -59,11 +66,12 @@ export function getDetailedStats(students: any[], range: string, year: string): 
     return stats;
 }
 
-export function getMonthlyStatsForYear(students: any[], year: number): { [monthKey: string]: number } {
+// Mesečna statistika za jednu ŠKOLSKU godinu (septembar -> avgust)
+export function getMonthlyStatsForYear(students: any[], schoolYearStart: number): { [monthKey: string]: number } {
     const monthlyStats: { [monthKey: string]: number } = {};
 
-    // Inicijalizuj sve mesece u godini sa 0
-    for (let month = 1; month <= 12; month++) {
+    // Inicijalizuj sve mesece školske godine sa 0 (redom od septembra)
+    for (const { month, year } of getSchoolYearMonths(schoolYearStart)) {
         const monthKey = `${year}-${month.toString().padStart(2, '0')}`;
         monthlyStats[monthKey] = 0;
     }
@@ -71,8 +79,8 @@ export function getMonthlyStatsForYear(students: any[], year: number): { [monthK
     // Popuni stvarnim podacima
     students.forEach(student => {
         const date = new Date(student.createdAt);
-        if (date.getFullYear() === year) {
-            const monthKey = `${year}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+        if (getSchoolYearForDate(date) === schoolYearStart) {
+            const monthKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
             monthlyStats[monthKey] = (monthlyStats[monthKey] || 0) + 1;
         }
     });
@@ -80,13 +88,13 @@ export function getMonthlyStatsForYear(students: any[], year: number): { [monthK
     return monthlyStats;
 }
 
-// Funkcija za godišnju statistiku
+// Statistika po ŠKOLSKIM godinama, npr. { "2025/2026": 15 }
 export function getYearlyStats(students: any[]): { [year: string]: number } {
     const yearlyStats: { [year: string]: number } = {};
 
     students.forEach(student => {
-        const year = new Date(student.createdAt).getFullYear().toString();
-        yearlyStats[year] = (yearlyStats[year] || 0) + 1;
+        const label = getSchoolYearLabel(getSchoolYearForDate(new Date(student.createdAt)));
+        yearlyStats[label] = (yearlyStats[label] || 0) + 1;
     });
 
     return yearlyStats;
@@ -105,12 +113,12 @@ export function getMonthlyStats(students: any[]): { [monthKey: string]: number }
     return monthlyStats;
 }
 
+// Dostupne ŠKOLSKE godine (vraća početne godine, npr. [2025, 2024])
 export function getAvailableYears(students: any[]): number[] {
     const years = new Set<number>();
 
     students.forEach(student => {
-        const year = new Date(student.createdAt).getFullYear();
-        years.add(year);
+        years.add(getSchoolYearForDate(new Date(student.createdAt)));
     });
 
     return Array.from(years).sort((a, b) => b - a); // Sortiraj opadajuće

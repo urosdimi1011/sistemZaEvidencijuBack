@@ -68,7 +68,8 @@ export const login = async (req: Request, res: Response) => {
             httpOnly: true,
             secure: true,
             sameSite: 'none',
-            maxAge: 15 * 60 * 1000,
+            // Usklađeno sa trajanjem JWT tokena (1h)
+            maxAge: 60 * 60 * 1000,
         });
         res.json({ tokenAuth, user:userResponse});
     }

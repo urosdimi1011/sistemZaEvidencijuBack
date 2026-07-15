@@ -26,6 +26,7 @@ app.use(cors({
     origin: [
         'https://kaleidoscopic-croissant-94ae88.netlify.app',
         'http://localhost:4173',
+        'http://localhost:5174',
         'http://localhost:5173'
     ],
     credentials: true

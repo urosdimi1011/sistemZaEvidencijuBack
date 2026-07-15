@@ -112,7 +112,7 @@ router.post('/', async (req: Request, res: Response) => {
         const { email, passwordMy, role, schoolId } = req.body
 
         // Validacija obaveznih polja
-        if (!email || !role) {
+        if (!email || !role || !passwordMy) {
             return res.status(400).json({
                 error: 'Email, password i role su obavezni'
             })

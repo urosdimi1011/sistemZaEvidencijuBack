@@ -4,6 +4,11 @@ import { School } from "../entity/School";
 import { Occupation } from "../entity/Occupation";
 import { Student } from "../entity/Student";
 import { Between, Like } from "typeorm";
+import {
+  getSchoolYearRange,
+  getSchoolYearForDate,
+  getSchoolYearMonths,
+} from "../utiles/schoolYear";
 
 const router = Router();
 const schoolRepo = AppDataSource.getRepository(School);
@@ -19,9 +24,9 @@ router.get("/monthly-enrollment", async (req, res) => {
       return res.status(400).json({ error: "Godina je obavezna" });
     }
 
+    // year = početna godina školske godine (npr. 2025 = školska 2025/26)
     const targetYear = parseInt(year as string);
-    const startDate = new Date(targetYear, 0, 1); // 1. januar
-    const endDate = new Date(targetYear, 11, 31); // 31. decembar
+    const { start: startDate, end: endDate } = getSchoolYearRange(targetYear);
 
     // Dobij sve škole sa svojim smerovima
     const schools = await schoolRepo.find({
@@ -38,12 +43,12 @@ router.get("/monthly-enrollment", async (req, res) => {
         totalEnrollment: 0,
       };
 
-      // Inicijalizuj mesečnu statistiku za celu godinu
+      // Inicijalizuj mesečnu statistiku za celu školsku godinu (septembar -> avgust)
       const monthlyStats: {
         [month: string]: { [occupationId: string]: number };
       } = {};
-      for (let month = 1; month <= 12; month++) {
-        const monthKey = `${month.toString().padStart(2, "0")}`;
+      for (const { month, year: calYear } of getSchoolYearMonths(targetYear)) {
+        const monthKey = `${calYear}-${month.toString().padStart(2, "0")}`;
         monthlyStats[monthKey] = {};
 
         // Inicijalizuj za svaki smer u školi
@@ -54,7 +59,7 @@ router.get("/monthly-enrollment", async (req, res) => {
 
       // Za svaki smer u školi
       for (const occupation of school.occupations) {
-        // Dobij sve studente za ovaj smer u target godini
+        // Dobij sve studente za ovaj smer u target školskoj godini
         const students = await studentRepo.find({
           where: {
             occupation: { id: occupation.id },
@@ -65,16 +70,18 @@ router.get("/monthly-enrollment", async (req, res) => {
 
         // Grupiši studente po mesecima
         for (const student of students) {
-          const month = (student.createdAt.getMonth() + 1)
+          const monthKey = `${student.createdAt.getFullYear()}-${(
+            student.createdAt.getMonth() + 1
+          )
             .toString()
-            .padStart(2, "0");
+            .padStart(2, "0")}`;
 
-          if (!monthlyStats[month]) {
-            monthlyStats[month] = {};
+          if (!monthlyStats[monthKey]) {
+            monthlyStats[monthKey] = {};
           }
 
-          monthlyStats[month][occupation.id] =
-            (monthlyStats[month][occupation.id] || 0) + 1;
+          monthlyStats[monthKey][occupation.id] =
+            (monthlyStats[monthKey][occupation.id] || 0) + 1;
           schoolData.totalEnrollment++;
         }
       }
@@ -104,9 +111,8 @@ router.get("/monthly-enrollment-aggregated", async (req, res) => {
       return res.status(400).json({ error: "Godina je obavezna" });
     }
 
+    // year = početna godina školske godine (npr. 2025 = školska 2025/26)
     const targetYear = parseInt(year as string);
-    const startDate = new Date(targetYear, 0, 1);
-    const endDate = new Date(targetYear, 11, 31);
 
     const schools = await schoolRepo.find({
       relations: ["occupations", "occupations.students"],
@@ -122,12 +128,12 @@ router.get("/monthly-enrollment-aggregated", async (req, res) => {
         occupations: [],
       };
 
-      // Pripremi podatke za svaki mesec
+      // Pripremi podatke za svaki mesec školske godine (septembar -> avgust)
       const monthlyData = [];
-      for (let month = 1; month <= 12; month++) {
+      for (const { month, year: calYear } of getSchoolYearMonths(targetYear)) {
         const monthData: any = {
           month: month.toString().padStart(2, "0"),
-          monthName: getMonthName(month),
+          monthName: `${getMonthName(month)} ${calYear}.`,
           total: 0,
           byOccupation: {},
           studentsByOccupation: {},
@@ -138,7 +144,7 @@ router.get("/monthly-enrollment-aggregated", async (req, res) => {
           const students = occupation.students.filter((student) => {
             const studentDate = new Date(student.createdAt);
             return (
-              studentDate.getFullYear() === targetYear &&
+              studentDate.getFullYear() === calYear &&
               studentDate.getMonth() + 1 === month
             );
           });
@@ -156,8 +162,9 @@ router.get("/monthly-enrollment-aggregated", async (req, res) => {
         id: occ.id,
         name: occ.name,
         totalStudentsPerYear: occ.students.filter((occ2) => {
-          const studentDate = new Date(occ2.createdAt);
-          return studentDate.getFullYear() === targetYear;
+          return (
+            getSchoolYearForDate(new Date(occ2.createdAt)) === targetYear
+          );
         }),
       }));
 
@@ -177,6 +184,9 @@ router.get("/monthly-enrollment-aggregated", async (req, res) => {
 });
 
 // API za očekivane uplate po mesecima
+
+
+///OVO OVDE JE PROBLEM
 router.get("/expected-payments", async (req, res) => {
   try {
     const { year } = req.query;
@@ -185,11 +195,11 @@ router.get("/expected-payments", async (req, res) => {
       return res.status(400).json({ error: "Godina je obavezna" });
     }
 
+    // year = početna godina školske godine (npr. 2025 = školska 2025/26)
     const targetYear = parseInt(year as string);
-    const startDate = new Date(targetYear, 0, 1);
-    const endDate = new Date(targetYear, 11, 31);
+    const { start: startDate, end: endDate } = getSchoolYearRange(targetYear);
 
-    // Dobij sve studente za target godinu
+    // Dobij sve studente za target školsku godinu
     const students = await studentRepo.find({
       where: {
         createdAt: Between(startDate, endDate),
@@ -199,18 +209,18 @@ router.get("/expected-payments", async (req, res) => {
 
     const result = [];
 
-    // Grupiši studente po mesecu upisa
-    for (let month = 1; month <= 12; month++) {
+    // Grupiši studente po mesecu upisa (septembar -> avgust)
+    for (const { month, year: calYear } of getSchoolYearMonths(targetYear)) {
       const monthKey = `${month.toString().padStart(2, "0")}`;
-      const monthName = getMonthName(month);
-
-      // const monthStart = new Date(targetYear, month - 1, 1);
-      // const monthEnd = new Date(targetYear, month, 0); // Poslednji dan u mesecu
+      const monthName = `${getMonthName(month)} ${calYear}.`;
 
       // Filtriraj studente upisane u ovom mesecu
       const studentsInMonth = students.filter((student) => {
         const studentDate = new Date(student.createdAt);
-        return studentDate.getMonth() + 1 === month;
+        return (
+          studentDate.getFullYear() === calYear &&
+          studentDate.getMonth() + 1 === month
+        );
       });
 
       const monthData: any = {
@@ -300,14 +310,18 @@ router.get("/expected-payments", async (req, res) => {
         }
       }
       if (Object.keys(monthData.byManager).length > 0) {
-        const sortedArray = Object.entries(monthData.byManager)
-          .sort(([keyA, valA] : any, [keyB, valB] : any) => valB.expected - valA.expected)
-          .reduce((acc : any, [key, value]) => {
-            acc[key] = value;
-            return acc;
-          }, {});
+        const sortedEntries = Object.entries(monthData.byManager).sort(
+          (a: any, b: any) => b[1].paid - a[1].paid
+        );
 
-        monthData.byManager = sortedArray;
+        // Kreiraj novi objekat - Node.js će zadržati redosled za string ključeve
+        const newObject: any = {};
+
+        sortedEntries.forEach(([key, value]) => {
+          newObject[key] = value;
+        });
+
+        monthData.byManager = newObject;
       }
       result.push(monthData);
     }
@@ -341,13 +355,17 @@ router.get("/expected-payments-details", async (req, res) => {
     const searchName = (studentName as string).trim();
     const searchStatus = status as string;
 
+    // targetYear = početna godina školske godine (npr. 2025 = školska 2025/26)
     let startDate, endDate;
     if (targetMonth) {
-      startDate = new Date(targetYear, targetMonth - 1, 1);
-      endDate = new Date(targetYear, targetMonth, 0);
+      // Септембар-decembar pripadaju početnoj godini, januar-avgust narednoj
+      const calYear = targetMonth >= 9 ? targetYear : targetYear + 1;
+      startDate = new Date(calYear, targetMonth - 1, 1);
+      endDate = new Date(calYear, targetMonth, 0, 23, 59, 59, 999);
     } else {
-      startDate = new Date(targetYear, 0, 1);
-      endDate = new Date(targetYear, 11, 31);
+      const range = getSchoolYearRange(targetYear);
+      startDate = range.start;
+      endDate = range.end;
     }
 
     // Prvo dobijamo sve studente koji zadovoljavaju osnovne uslove
@@ -382,21 +400,21 @@ router.get("/expected-payments-details", async (req, res) => {
 
       let paymentStatus;
       if (remainingAmount === 0) {
-        paymentStatus = "Plaćeno";
+        paymentStatus = "Плаћено";
       } else if (remainingAmount === Number(student.cenaSkolarine)) {
-        paymentStatus = "Nije plaćeno";
+        paymentStatus = "Није плаћено";
       } else {
-        paymentStatus = "Delimično";
+        paymentStatus = "Делимично";
       }
 
       return {
         studentId: student.id,
         studentName: `${student.ime} ${student.prezime}`,
-        school: student.occupation?.school?.name || "Nepoznato",
-        occupation: student.occupation?.name || "Nepoznato",
+        school: student.occupation?.school?.name || "Непознато",
+        occupation: student.occupation?.name || "Непознато",
         manager: student.menadzer
           ? `${student.menadzer.ime} ${student.menadzer.prezime}`
-          : "Nepoznato",
+          : "Непознато",
         totalAmount: Number(student.cenaSkolarine),
         paidAmount: totalPaid,
         remainingAmount: remainingAmount,
@@ -438,28 +456,28 @@ router.get("/expected-payments-details", async (req, res) => {
 });
 function getMonthName(month: number): string {
   const months = [
-    "Januar",
-    "Februar",
-    "Mart",
-    "April",
-    "Maj",
-    "Jun",
-    "Jul",
-    "Avgust",
-    "Septembar",
-    "Oktobar",
-    "Novembar",
-    "Decembar",
+    "Јануар",
+    "Фебруар",
+    "Март",
+    "Април",
+    "Мај",
+    "Јун",
+    "Јул",
+    "Август",
+    "Септембар",
+    "Октобар",
+    "Новембар",
+    "Децембар",
   ];
   return months[month - 1];
 }
 
+// Vraća dostupne ŠKOLSKE godine (početne godine, npr. 2025 = školska 2025/26)
 function getAvailableYearsForSchool(occupation: Occupation[]): number[] {
   const years = new Set<number>();
   occupation?.forEach((occ) => {
     occ?.students.forEach((student: any) => {
-      const year = new Date(student.createdAt).getFullYear();
-      years.add(year);
+      years.add(getSchoolYearForDate(new Date(student.createdAt)));
     });
   });
 

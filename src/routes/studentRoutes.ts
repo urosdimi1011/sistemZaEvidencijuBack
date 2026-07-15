@@ -3,11 +3,11 @@
 import { Router } from "express";
 import { AppDataSource } from "../data-source";
 import { Student } from "../entity/Student";
-import { Between, FindOptionsWhere, Like } from "typeorm";
+import { Between, FindOptionsWhere, ILike } from "typeorm";
 import { object } from "yup";
 import { Payment } from "../entity/Payment";
-import { StudentService } from "../services/student.service";
 import { ManagerPayment } from "../entity/ManagerPayment";
+import { searchVariants } from "../utiles/transliterate";
 
 const router = Router();
 const studentiRepo = AppDataSource.getRepository(Student);
@@ -17,7 +17,13 @@ router.get("/", async (req, res) => {
   try {
     const searchTerm = (req.query.search as string)?.trim();
     const datePicker = (req.query.date as string)?.trim();
-    const schoolIdTerm = (req.query.schoolId as string)?.trim();
+    let schoolIdTerm = (req.query.schoolId as string)?.trim();
+
+    // school_manager sme da vidi samo učenike svoje škole — ne veruj klijentu
+    const requestUser = (req as any).user;
+    if (requestUser?.role === "school_manager" && requestUser?.schoolId) {
+      schoolIdTerm = String(requestUser.schoolId);
+    }
 
     let where: FindOptionsWhere<Student> | FindOptionsWhere<Student>[] = {};
 
@@ -66,26 +72,34 @@ router.get("/", async (req, res) => {
       const terms = searchTerm.split(/\s+/).filter((t) => t.length > 0);
       const searchConditions: FindOptionsWhere<Student>[] = [];
 
+      // Svaki pojam se pretražuje u svim pismima (latinica + ćirilica),
+      // ILike = ne razlikuje velika i mala slova
       terms.forEach((term) => {
-        searchConditions.push(
-          { ...baseWhere, ime: Like(`%${term}%`) },
-          { ...baseWhere, prezime: Like(`%${term}%`) }
-        );
+        searchVariants(term).forEach((variant) => {
+          searchConditions.push(
+            { ...baseWhere, ime: ILike(`%${variant}%`) },
+            { ...baseWhere, prezime: ILike(`%${variant}%`) }
+          );
+        });
       });
 
       if (terms.length >= 2) {
-        searchConditions.push(
-          {
-            ...baseWhere,
-            ime: Like(`%${terms[0]}%`),
-            prezime: Like(`%${terms[1]}%`),
-          },
-          {
-            ...baseWhere,
-            ime: Like(`%${terms[1]}%`),
-            prezime: Like(`%${terms[0]}%`),
+        for (const v0 of searchVariants(terms[0])) {
+          for (const v1 of searchVariants(terms[1])) {
+            searchConditions.push(
+              {
+                ...baseWhere,
+                ime: ILike(`%${v0}%`),
+                prezime: ILike(`%${v1}%`),
+              },
+              {
+                ...baseWhere,
+                ime: ILike(`%${v1}%`),
+                prezime: ILike(`%${v0}%`),
+              }
+            );
           }
-        );
+        }
       }
       finalWhere = searchConditions;
     } else {
@@ -190,7 +204,12 @@ router.get("/", async (req, res) => {
 
 router.get("/stats", async (req, res) => {
   try {
-    const schoolIdTerm = (req.query.schoolId as string)?.trim();
+    let schoolIdTerm = (req.query.schoolId as string)?.trim();
+
+    const requestUser = (req as any).user;
+    if (requestUser?.role === "school_manager" && requestUser?.schoolId) {
+      schoolIdTerm = String(requestUser.schoolId);
+    }
     let where: FindOptionsWhere<Student> = {};
 
     if (schoolIdTerm) {
@@ -239,7 +258,7 @@ router.get("/:id", async (req, res) => {
     const studentId = parseInt(req.params.id);
     const student = await studentiRepo.findOne({
       where: { id: studentId },
-      relations: ["payments", "managerPayouts", "occupation"],
+      relations: ["payments", "managerPayouts", "occupation.school"],
     });
     if (!student) {
       return res.status(404).json({ message: "Student nije pronađen" });
@@ -298,8 +317,21 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+// Administracija škole (school_manager) sme da unese samo 0% ili 20% za menadžera
+function isValidPercentForSchoolManager(req: any, procenat: any): boolean {
+  if (req.user?.role !== "school_manager") return true;
+  if (procenat === null || procenat === undefined || procenat === "") return true;
+  return [0, 20].includes(Number(procenat));
+}
+
 router.post("/", async (req, res) => {
   try {
+    if (!isValidPercentForSchoolManager(req, req.body?.procenatManagera)) {
+      return res.status(400).json({
+        error: { detail: "Dozvoljen procenat za menadžera je 0% ili 20%" },
+      });
+    }
+
     const dataForSend = object(req.body).fields;
 
     console.log(dataForSend.createdAt);
@@ -312,7 +344,7 @@ router.post("/", async (req, res) => {
     const sacuvan = await studentiRepo.save(novi);
     let studentSaMenadzerom = await studentiRepo.findOne({
       where: { id: sacuvan.id },
-      relations: ["menadzer", "payments", "managerPayouts", "occupation"],
+      relations: ["menadzer", "payments", "managerPayouts", "occupation.school"],
     });
 
     if (!studentSaMenadzerom) {
@@ -370,6 +402,13 @@ router.patch("/:id", async (req, res) => {
     const studentId = parseInt(req.params.id);
     const dataForSend = req.body;
 
+    if (!isValidPercentForSchoolManager(req, dataForSend?.procenatManagera)) {
+      await queryRunner.rollbackTransaction();
+      return res.status(400).json({
+        error: { detail: "Dozvoljen procenat za menadžera je 0% ili 20%" },
+      });
+    }
+
     const currentStudent = await queryRunner.manager.findOne(Student, {
       where: { id: studentId },
       relations: ["managerPayouts"],
@@ -419,7 +458,7 @@ router.patch("/:id", async (req, res) => {
 
     const updatedStudent = await queryRunner.manager.findOne(Student, {
       where: { id: studentId },
-      relations: ["menadzer", "payments", "occupation", "managerPayouts"],
+      relations: ["menadzer", "payments", "occupation.school", "managerPayouts"],
     });
 
     await queryRunner.commitTransaction();
@@ -537,27 +576,6 @@ router.delete("/:id", async (req, res) => {
     });
   } finally {
     await queryRunner.release();
-  }
-});
-
-// POST, PUT, DELETE…
-
-router.get("/school", async (req, res) => {
-  const studentService = new StudentService();
-
-  try {
-    const { page = 1, limit = 20 } = req.query;
-    const { schoolId } = req.body; // Nakon schoolAccessMiddleware, sigurno postoji
-
-    const result = await studentService.getStudentsForSchool(
-      schoolId,
-      Number(page),
-      Number(limit)
-    );
-
-    res.json(result);
-  } catch (error: any) {
-    res.status(500).json({ message: error.message });
   }
 });
 
