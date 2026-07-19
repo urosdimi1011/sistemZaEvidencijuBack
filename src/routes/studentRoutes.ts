@@ -17,6 +17,7 @@ router.get("/", async (req, res) => {
   try {
     const searchTerm = (req.query.search as string)?.trim();
     const datePicker = (req.query.date as string)?.trim();
+    const typeTerm = (req.query.type as string)?.trim();
     let schoolIdTerm = (req.query.schoolId as string)?.trim();
 
     // school_manager sme da vidi samo učenike svoje škole — ne veruj klijentu
@@ -46,6 +47,11 @@ router.get("/", async (req, res) => {
           id: Number(schoolIdTerm),
         },
       };
+    }
+
+    // Filter po tipu učenika (redovni / vandredni)
+    if (typeTerm && ["redovni", "vandredni"].includes(typeTerm)) {
+      baseWhere.type = typeTerm as "redovni" | "vandredni";
     }
 
     if (datePicker) {
