@@ -460,6 +460,11 @@ router.patch("/:id", async (req, res) => {
       delete dataForSend.createdAt;
     }
 
+    // Prazno ime roditelja se čuva kao NULL (polje je opciono)
+    if (dataForSend.imeRoditelja === "") {
+      dataForSend.imeRoditelja = null;
+    }
+
     await queryRunner.manager.update(Student, studentId, dataForSend);
 
     const updatedStudent = await queryRunner.manager.findOne(Student, {
