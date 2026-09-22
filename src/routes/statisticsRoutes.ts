@@ -4,16 +4,30 @@ import { School } from "../entity/School";
 import { Occupation } from "../entity/Occupation";
 import { Student } from "../entity/Student";
 import { Between, Like } from "typeorm";
+import { Payment } from "../entity/Payment";
+import { ManagerPayment } from "../entity/ManagerPayment";
 import {
   getSchoolYearRange,
   getSchoolYearForDate,
+  getSchoolYearLabel,
   getSchoolYearMonths,
 } from "../utiles/schoolYear";
 
 const router = Router();
+
+/**
+ * Godina stiže iz URL-a. Nevalidna vrednost pravi "Invalid Date" koji
+ * obara SQL upit, pa se odbija pre nego što dođe do baze.
+ */
+function jeValidnaSkolskaGodina(godina: number): boolean {
+  return Number.isInteger(godina) && godina >= 1900 && godina <= 2200;
+}
+
 const schoolRepo = AppDataSource.getRepository(School);
 const occupationRepo = AppDataSource.getRepository(Occupation);
 const studentRepo = AppDataSource.getRepository(Student);
+const paymentRepo = AppDataSource.getRepository(Payment);
+const managerPaymentRepo = AppDataSource.getRepository(ManagerPayment);
 
 // API za mesečnu statistiku upisa po školama i smerovima
 router.get("/monthly-enrollment", async (req, res) => {
@@ -197,6 +211,9 @@ router.get("/expected-payments", async (req, res) => {
 
     // year = početna godina školske godine (npr. 2025 = školska 2025/26)
     const targetYear = parseInt(year as string);
+    if (!jeValidnaSkolskaGodina(targetYear)) {
+      return res.status(400).json({ error: "Nevalidna školska godina" });
+    }
     const { start: startDate, end: endDate } = getSchoolYearRange(targetYear);
 
     // Dobij sve studente za target školsku godinu
@@ -356,6 +373,13 @@ router.get("/expected-payments-details", async (req, res) => {
     const searchStatus = status as string;
 
     // targetYear = početna godina školske godine (npr. 2025 = školska 2025/26)
+    if (!jeValidnaSkolskaGodina(targetYear)) {
+      return res.status(400).json({ error: "Nevalidna školska godina" });
+    }
+    if (targetMonth !== null && (isNaN(targetMonth) || targetMonth < 1 || targetMonth > 12)) {
+      return res.status(400).json({ error: "Nevalidan mesec" });
+    }
+
     let startDate, endDate;
     if (targetMonth) {
       // Септембар-decembar pripadaju početnoj godini, januar-avgust narednoj
@@ -454,6 +478,173 @@ router.get("/expected-payments-details", async (req, res) => {
     res.status(500).json({ error: "Interna greška servera" });
   }
 });
+// Godišnji izveštaj: zbirno po školama za jednu školsku godinu (1.9. - 31.8.).
+// Uplate i isplate se računaju po DATUMU NOVCA — sve što je naplaćeno ili
+// isplaćeno unutar perioda, bez obzira kada je učenik upisan.
+router.get("/godisnji-izvestaj", async (req, res) => {
+  try {
+    const { year } = req.query;
+
+    const schoolYearStart = year
+      ? parseInt(year as string)
+      : getSchoolYearForDate(new Date());
+
+    if (!jeValidnaSkolskaGodina(schoolYearStart)) {
+      return res.status(400).json({ error: "Nevalidna školska godina" });
+    }
+
+    const { start: od, end: doDatum } = getSchoolYearRange(schoolYearStart);
+
+    // Uplate učenika u periodu, grupisane po školi
+    const uplate = await paymentRepo
+      .createQueryBuilder("p")
+      .leftJoin("p.student", "s")
+      .leftJoin("s.occupation", "o")
+      .leftJoin("o.school", "sc")
+      .select("sc.id", "schoolId")
+      .addSelect("SUM(p.amount)", "iznos")
+      .addSelect("COUNT(p.id)", "broj")
+      .where("p.paidAt BETWEEN :od AND :doDatum", { od, doDatum })
+      .groupBy("sc.id")
+      .getRawMany();
+
+    // Isplate menadžerima u periodu, grupisane po školi učenika
+    const isplate = await managerPaymentRepo
+      .createQueryBuilder("mp")
+      .leftJoin("mp.student", "s")
+      .leftJoin("s.occupation", "o")
+      .leftJoin("o.school", "sc")
+      .select("sc.id", "schoolId")
+      .addSelect("SUM(mp.amount)", "iznos")
+      .addSelect("COUNT(mp.id)", "broj")
+      .where("mp.paidAt BETWEEN :od AND :doDatum", { od, doDatum })
+      .groupBy("sc.id")
+      .getRawMany();
+
+    // Naplaćena literatura u periodu (vodi se odvojeno od školarine)
+    const literatura = await studentRepo
+      .createQueryBuilder("s")
+      .leftJoin("s.occupation", "o")
+      .leftJoin("o.school", "sc")
+      .select("sc.id", "schoolId")
+      .addSelect("SUM(s.literature)", "iznos")
+      .addSelect("COUNT(s.id)", "broj")
+      .where("s.literaturePaidAt BETWEEN :od AND :doDatum", { od, doDatum })
+      .groupBy("sc.id")
+      .getRawMany();
+
+    // Generacija upisana te školske godine: koliko ih je i koliko je zaduženo.
+    // Ovo je vezano za UČENIKE upisane u periodu, za razliku od kolona iznad
+    // koje prate NOVAC koji se kretao u periodu.
+    const upisani = await studentRepo
+      .createQueryBuilder("s")
+      .leftJoin("s.occupation", "o")
+      .leftJoin("o.school", "sc")
+      .select("sc.id", "schoolId")
+      .addSelect("COUNT(s.id)", "broj")
+      .addSelect("SUM(s.cenaSkolarine)", "zaduzeno")
+      .where("s.createdAt BETWEEN :od AND :doDatum", { od, doDatum })
+      .groupBy("sc.id")
+      .getRawMany();
+
+    // Koliko je ta generacija do sada uplatila (bez obzira kada je uplaćeno)
+    const naplacenoOdGeneracije = await paymentRepo
+      .createQueryBuilder("p")
+      .leftJoin("p.student", "s")
+      .leftJoin("s.occupation", "o")
+      .leftJoin("o.school", "sc")
+      .select("sc.id", "schoolId")
+      .addSelect("SUM(p.amount)", "iznos")
+      .where("s.createdAt BETWEEN :od AND :doDatum", { od, doDatum })
+      .groupBy("sc.id")
+      .getRawMany();
+
+    const nadji = (niz: any[], schoolId: number) =>
+      niz.find((r) => Number(r.schoolId) === schoolId);
+
+    const schools = await schoolRepo.find({ order: { name: "ASC" } });
+
+    const redovi = schools.map((school) => {
+      const u = nadji(uplate, school.id);
+      const i = nadji(isplate, school.id);
+      const l = nadji(literatura, school.id);
+      const up = nadji(upisani, school.id);
+      const ng = nadji(naplacenoOdGeneracije, school.id);
+
+      const uplaceno = Number(u?.iznos || 0);
+      const isplaceno = Number(i?.iznos || 0);
+      const zaduzeno = Number(up?.zaduzeno || 0);
+      const naplaceno = Number(ng?.iznos || 0);
+
+      return {
+        schoolId: school.id,
+        schoolName: school.name,
+        brojUpisanih: Number(up?.broj || 0),
+        uplaceno: parseFloat(uplaceno.toFixed(2)),
+        brojUplata: Number(u?.broj || 0),
+        isplacenoMenadzerima: parseFloat(isplaceno.toFixed(2)),
+        brojIsplata: Number(i?.broj || 0),
+        literaturaNaplacena: Number(l?.iznos || 0),
+        brojNaplacenihLiteratura: Number(l?.broj || 0),
+        neto: parseFloat((uplaceno - isplaceno).toFixed(2)),
+        // Podaci o generaciji upisanoj te godine
+        zaduzeno: parseFloat(zaduzeno.toFixed(2)),
+        naplacenoOdGeneracije: parseFloat(naplaceno.toFixed(2)),
+        preostaloZaNaplatu: parseFloat(
+          Math.max(0, zaduzeno - naplaceno).toFixed(2)
+        ),
+      };
+    });
+
+    const zbir = (polje: keyof (typeof redovi)[0]) =>
+      redovi.reduce((suma, r) => suma + Number(r[polje] || 0), 0);
+
+    // Školske godine za koje uopšte ima podataka (za padajući izbor)
+    const rasponUpisa = await studentRepo
+      .createQueryBuilder("s")
+      .select("MIN(s.createdAt)", "min")
+      .addSelect("MAX(s.createdAt)", "max")
+      .getRawOne();
+
+    const tekuca = getSchoolYearForDate(new Date());
+    const availableSchoolYears: number[] = [];
+    if (rasponUpisa?.min && rasponUpisa?.max) {
+      const prva = getSchoolYearForDate(new Date(rasponUpisa.min));
+      const poslednja = Math.max(
+        getSchoolYearForDate(new Date(rasponUpisa.max)),
+        tekuca
+      );
+      for (let g = poslednja; g >= prva; g--) availableSchoolYears.push(g);
+    } else {
+      availableSchoolYears.push(tekuca);
+    }
+
+    res.json({
+      schoolYear: getSchoolYearLabel(schoolYearStart),
+      schoolYearStart,
+      availableSchoolYears,
+      period: { od, do: doDatum },
+      schools: redovi,
+      ukupno: {
+        brojUpisanih: zbir("brojUpisanih"),
+        uplaceno: parseFloat(zbir("uplaceno").toFixed(2)),
+        brojUplata: zbir("brojUplata"),
+        isplacenoMenadzerima: parseFloat(zbir("isplacenoMenadzerima").toFixed(2)),
+        brojIsplata: zbir("brojIsplata"),
+        literaturaNaplacena: zbir("literaturaNaplacena"),
+        brojNaplacenihLiteratura: zbir("brojNaplacenihLiteratura"),
+        neto: parseFloat(zbir("neto").toFixed(2)),
+        zaduzeno: parseFloat(zbir("zaduzeno").toFixed(2)),
+        naplacenoOdGeneracije: parseFloat(zbir("naplacenoOdGeneracije").toFixed(2)),
+        preostaloZaNaplatu: parseFloat(zbir("preostaloZaNaplatu").toFixed(2)),
+      },
+    });
+  } catch (error) {
+    console.error("Greška pri izradi godišnjeg izveštaja:", error);
+    res.status(500).json({ error: "Interna greška servera" });
+  }
+});
+
 function getMonthName(month: number): string {
   const months = [
     "Јануар",

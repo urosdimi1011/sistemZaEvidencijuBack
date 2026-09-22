@@ -19,6 +19,11 @@ export class Occupation {
     @Column({ unique: true })
     name!: string;
 
+    // Da li se zanimanje nudi pri upisu redovnih učenika.
+    // Vanrednim učenicima se nude sva zanimanja škole.
+    @Column({ default: false })
+    zaRedovne!: boolean;
+
     @ManyToOne(() => School, (mgr) => mgr.occupations, { nullable: false })
     school!: School;
 

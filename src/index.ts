@@ -13,7 +13,7 @@ import statisticsRoutes from './routes/statisticsRoutes';
 import schoolRoutes from './routes/schoolsRoutes';
 
 import authRoutes from "./routes/authRoutes";
-import {auth, schoolAccessMiddleware} from './middlewares/authMiddleware';
+import {auth, adminOnly, schoolAccessMiddleware} from './middlewares/authMiddleware';
 import cookieParser from 'cookie-parser';
 import occupationsRoutes from "./routes/occupationsRoutes";
 import usersRoutes from "./routes/UsersRoutes";
@@ -49,7 +49,7 @@ async function main() {
         app.use('/api/payments',[auth(),schoolAccessMiddleware()] ,paymantsRoutes);
         app.use('/api/schools',[auth(),schoolAccessMiddleware()] ,schoolRoutes);
         app.use('/api/occupations',[auth(),schoolAccessMiddleware()] ,occupationsRoutes);
-        app.use('/api/users',[auth(),schoolAccessMiddleware()] ,usersRoutes);
+        app.use('/api/users',[auth(),adminOnly()] ,usersRoutes);
 
         app.listen(PORT, () =>
             console.log(`🚀 Server pokrenut na http://localhost:${PORT}`)

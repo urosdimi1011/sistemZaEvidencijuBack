@@ -1,9 +1,10 @@
 import { Router } from 'express';
-import {register, login, me, logout} from '../controllers/AuthController';
+import {login, me, logout} from '../controllers/AuthController';
 
 const router = Router();
 
-router.post('/register', register);
+// Javna registracija je uklonjena — naloge pravi isključivo administrator
+// kroz stranicu "Кориснички налози" (POST /api/users).
 router.post('/login', login);
 router.post('/logout', logout);
 router.get('/me', me);

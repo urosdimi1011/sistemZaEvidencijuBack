@@ -3,47 +3,36 @@ import { AppDataSource } from '../data-source'
 import {Payment} from "../entity/Payment";
 import {Student} from "../entity/Student";
 import {ManagerPayment} from "../entity/ManagerPayment";
+import {
+    maksimalnaIzmenaUplate,
+    obracunUcenika,
+    saberiIznose,
+    stanjeUcenika,
+    ukupanDug,
+    zaokruziNovac,
+} from "../utiles/obracun";
 
 const router = Router()
 const paymantRepo = AppDataSource.getRepository(Payment)
 const studentRepo = AppDataSource.getRepository(Student)
 const managerPaymentRepo = AppDataSource.getRepository(ManagerPayment);
 
-// Helper funkcija za kalkulaciju
+// Helper funkcija za kalkulaciju.
+// Literatura se naplaćuje odvojeno i ne ulazi u školarinu.
+// Dug se ne prikazuje u minusu nego kao izmireno, a višak kao preplata.
+// NAPOMENA: ovde se koristi formula "vrati" — isplata menadžeru UVEĆAVA
+// dug učenika, suprotno od spiska učenika. Zatečeno stanje, nije menjano.
 async function calculateStudentBalance(student: Student) {
-    // Ukupne direktne uplate učenika
-    const totalPaidByStudent = student.payments.reduce((sum, payment) => 
-        sum + Number(payment.amount), 0
-    );
-    
-    // Ukupne isplate menadžeru
-    const totalPaidToManager = student.managerPayouts.reduce((sum, payout) => 
-        sum + Number(payout.amount), 0
-    );
-    
-    // Ukupan dug
-    const totalDebt = Number(student.cenaSkolarine) + (student.literature || 0);
-    
-    // Maksimalna isplata menadžeru
-    const maxManagerPayout = student.procenatManagera 
-        ? Number(student.cenaSkolarine) * (student.procenatManagera / 100) 
-        : 0;
-    
-    // Preostalo za isplatu menadžeru
-    const remainingForManager = Math.max(0, maxManagerPayout - totalPaidToManager);
-    
-    // KLJUČNA IZMENA: totalPaid = nominalne uplate učenika (bez oduzimanja menadžera)
-    // Ali remainingAmount uzima u obzir isplate menadžeru
-    const totalPaid = totalPaidByStudent;
-    const remainingAmount = totalDebt - (totalPaidByStudent - totalPaidToManager);
+    const obracun = obracunUcenika(student, "vrati", true);
 
     return {
-        totalDebt: parseFloat(totalDebt.toFixed(2)),
-        totalPaid: parseFloat(totalPaid.toFixed(2)),
-        totalPaidToManager: parseFloat(totalPaidToManager.toFixed(2)),
-        remainingAmount: parseFloat(remainingAmount.toFixed(2)),
-        maxManagerPayout: parseFloat(maxManagerPayout.toFixed(2)),
-        remainingForManager: parseFloat(remainingForManager.toFixed(2))
+        totalDebt: zaokruziNovac(obracun.ukupanDug),
+        totalPaid: zaokruziNovac(obracun.uplaceno),
+        totalPaidToManager: zaokruziNovac(obracun.isplacenoMenadzeru),
+        remainingAmount: zaokruziNovac(obracun.preostaliDug),
+        preplata: zaokruziNovac(obracun.preplata),
+        maxManagerPayout: zaokruziNovac(obracun.provizijaMenadzera),
+        remainingForManager: zaokruziNovac(obracun.preostaloMenadzeru)
     };
 }
 
@@ -107,7 +96,15 @@ router.post('/:id', async (_req, res) => {
 
         // Kalkulacija nakon nove uplate
         const newTotalPaid = balance.totalPaid + iznosZaUplatu;
-        const newRemainingAmount = balance.totalDebt - (newTotalPaid - balance.totalPaidToManager);
+        const {
+            preostaliDug: newRemainingAmount,
+            preplata: novaPreplata,
+        } = stanjeUcenika(
+            balance.totalDebt,
+            newTotalPaid,
+            balance.totalPaidToManager,
+            "vrati"
+        );
 
         res.status(201).json({
             message: 'Uplata uspešno evidentirana',
@@ -120,7 +117,8 @@ router.post('/:id', async (_req, res) => {
             student: {
                 id: student.id,
                 totalPaid: parseFloat(newTotalPaid.toFixed(2)),
-                remainingAmount: parseFloat(newRemainingAmount.toFixed(2))
+                remainingAmount: parseFloat(newRemainingAmount.toFixed(2)),
+                preplata: parseFloat(novaPreplata.toFixed(2))
             }
         });
     }
@@ -169,23 +167,30 @@ router.patch('/:id', async (_req, res) => {
         const student = payment.student;
         
         // Kalkulacija bez trenutne uplate
-        const totalPaidWithoutCurrent = student.payments
-            .filter(p => p.id !== paymentId)
-            .reduce((sum, p) => sum + Number(p.amount), 0);
-        
-        const totalPaidToManager = student.managerPayouts.reduce((sum, payout) => 
-            sum + Number(payout.amount), 0
+        const totalPaidWithoutCurrent = saberiIznose(
+            student.payments?.filter(p => p.id !== paymentId),
+            "uplate učenika"
         );
-        
-        const totalDebt = Number(student.cenaSkolarine) + (student.literature || 0);
-        
+
+        const totalPaidToManager = saberiIznose(
+            student.managerPayouts,
+            "isplate menadžeru"
+        );
+
+        // Literatura se naplaćuje odvojeno i ne ulazi u školarinu
+        const totalDebt = ukupanDug(student.cenaSkolarine);
+
         const newTotalPaid = totalPaidWithoutCurrent + iznosUplate;
         
         const effectiveCovered = newTotalPaid - totalPaidToManager;
         
         // Provera da efektivna uplata ne premašuje dug
         if (effectiveCovered > totalDebt) {
-            const maxNominalAllowed = totalDebt + totalPaidToManager - totalPaidWithoutCurrent;
+            const maxNominalAllowed = maksimalnaIzmenaUplate(
+                totalDebt,
+                totalPaidToManager,
+                totalPaidWithoutCurrent
+            );
             return res.status(400).json({
                 message: `Novi iznos (${iznosUplate}€) premašuje preostali dug. Maksimalan iznos: ${maxNominalAllowed.toFixed(2)}€`,
                 maxAllowed: parseFloat(maxNominalAllowed.toFixed(2))
@@ -197,7 +202,12 @@ router.patch('/:id', async (_req, res) => {
         payment.note = note;
         await paymantRepo.save(payment);
 
-        const remainingAmount = totalDebt - effectiveCovered;
+        const { preostaliDug: remainingAmount, preplata } = stanjeUcenika(
+            totalDebt,
+            newTotalPaid,
+            totalPaidToManager,
+            "vrati"
+        );
 
         res.status(200).json({
             message: 'Uplata uspešno ažurirana',
@@ -211,6 +221,7 @@ router.patch('/:id', async (_req, res) => {
                 id: student.id,
                 totalPaid: parseFloat(newTotalPaid.toFixed(2)),
                 remainingAmount: parseFloat(remainingAmount.toFixed(2)),
+                preplata: parseFloat(preplata.toFixed(2)),
                 ukupanDug: parseFloat(totalDebt.toFixed(2))
             }
         });
@@ -244,16 +255,26 @@ router.delete('/:id', async (_req, res) => {
         await paymantRepo.delete(paymentId);
 
         // Kalkulacija nakon brisanja
-        const totalPaid = student.payments
-            .filter(p => p.id !== paymentId)
-            .reduce((sum, p) => sum + Number(p.amount), 0);
-        
-        const totalPaidToManager = student.managerPayouts.reduce((sum, payout) => 
-            sum + Number(payout.amount), 0
+        const totalPaid = saberiIznose(
+            student.payments?.filter(p => p.id !== paymentId),
+            "uplate učenika"
         );
-        
-        const totalDebt = Number(student.cenaSkolarine) + (student.literature || 0);
-        const remainingAmount = totalDebt - totalPaid - totalPaidToManager;
+
+        const totalPaidToManager = saberiIznose(
+            student.managerPayouts,
+            "isplate menadžeru"
+        );
+
+        // Literatura se naplaćuje odvojeno i ne ulazi u školarinu.
+        // NAPOMENA: ovde se koristi formula "oduzmi", a pri unosu i izmeni
+        // uplate formula "vrati". Zatečeno stanje, nije menjano.
+        const totalDebt = ukupanDug(student.cenaSkolarine);
+        const { preostaliDug: remainingAmount, preplata } = stanjeUcenika(
+            totalDebt,
+            totalPaid,
+            totalPaidToManager,
+            "oduzmi"
+        );
 
         res.status(200).json({
             message: 'Uplata uspešno obrisana',
@@ -265,6 +286,7 @@ router.delete('/:id', async (_req, res) => {
                 id: student.id,
                 totalPaid: parseFloat(totalPaid.toFixed(2)),
                 remainingAmount: parseFloat(remainingAmount.toFixed(2)),
+                preplata: parseFloat(preplata.toFixed(2)),
                 totalDebt: parseFloat(totalDebt.toFixed(2))
             }
         });

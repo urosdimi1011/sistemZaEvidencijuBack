@@ -9,6 +9,11 @@ import {
   getAvailableYears,
   getDetailedStats,
 } from "../utiles/ManagerFunctions";
+import {
+  getSchoolYearForDate,
+  getSchoolYearRange,
+} from "../utiles/schoolYear";
+import { parseSearch } from "../utiles/studentFilters";
 
 const router = Router();
 const menadzerRepo = AppDataSource.getRepository(Menadzer);
@@ -20,16 +25,40 @@ router.get("/", async (req, res) => {
   const year = req.query.year as string;
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const search = req.query.search as string;
+  const search = parseSearch(req.query.search);
+  // Početna godina školske godine (npr. 2026 = školska 2026/27).
+  // Ako nije prosleđena, broje se učenici iz svih godina.
+  const schoolYearParam = req.query.schoolYear as string;
 
   try {
     const whereConditions = search
       ? [{ ime: Like(`%${search}%`) }, { prezime: Like(`%${search}%`) }]
       : {};
 
-    const subQuery = menadzerRepo
-      .createQueryBuilder("m")
-      .leftJoin("m.students", "s")
+    const schoolYearStart = parseInt(schoolYearParam);
+    const schoolYearRange = !isNaN(schoolYearStart)
+      ? getSchoolYearRange(schoolYearStart)
+      : null;
+
+    const subQuery = menadzerRepo.createQueryBuilder("m");
+
+    // Kada je izabrana školska godina, broje se samo učenici upisani u njoj
+    // (LEFT JOIN, pa menadžeri bez učenika te godine ostaju u listi sa 0)
+    if (schoolYearRange) {
+      subQuery.leftJoin(
+        "m.students",
+        "s",
+        "s.createdAt BETWEEN :schoolYearFrom AND :schoolYearTo",
+        {
+          schoolYearFrom: schoolYearRange.start,
+          schoolYearTo: schoolYearRange.end,
+        }
+      );
+    } else {
+      subQuery.leftJoin("m.students", "s");
+    }
+
+    subQuery
       .select("m.id", "id")
       .addSelect("COUNT(s.id)", "count")
       .groupBy("m.id")
@@ -51,6 +80,30 @@ router.get("/", async (req, res) => {
       where: { id: In(pageIds) },
       relations: ["students", "students.occupation.school", "isplate"],
     });
+
+    // Školske godine za koje postoje učenici (za padajući filter),
+    // uvek uključujući i tekuću školsku godinu
+    const rasponUpisa = await studentRepo
+      .createQueryBuilder("s")
+      .select("MIN(s.createdAt)", "min")
+      .addSelect("MAX(s.createdAt)", "max")
+      .getRawOne();
+
+    const tekucaSkolskaGodina = getSchoolYearForDate(new Date());
+    const availableSchoolYears: number[] = [];
+
+    if (rasponUpisa?.min && rasponUpisa?.max) {
+      const prva = getSchoolYearForDate(new Date(rasponUpisa.min));
+      const poslednja = Math.max(
+        getSchoolYearForDate(new Date(rasponUpisa.max)),
+        tekucaSkolskaGodina
+      );
+      for (let g = poslednja; g >= prva; g--) {
+        availableSchoolYears.push(g);
+      }
+    } else {
+      availableSchoolYears.push(tekucaSkolskaGodina);
+    }
 
     if (range || year) {
         const menadzeriMap = new Map(menadzeri.map((m) => [m.id, m]));
@@ -92,8 +145,18 @@ router.get("/", async (req, res) => {
       });
     } else {
       if (pageIds.length === 0) {
+        // Paginacija se vraća i kad nema rezultata — front je чита без провере
         res.json({
           managers: [],
+          pagination: {
+            currentPage: page,
+            totalPages: 0,
+            totalItems: 0,
+            itemsPerPage: limit,
+            hasNextPage: false,
+            hasPreviousPage: false,
+          },
+          availableSchoolYears,
         });
         return;
       }
@@ -131,6 +194,7 @@ router.get("/", async (req, res) => {
           hasNextPage: page < totalPages,
           hasPreviousPage: page > 1,
         },
+        availableSchoolYears,
       });
     }
   } catch (error) {
@@ -140,21 +204,23 @@ router.get("/", async (req, res) => {
 });
 router.get("/dropdown", async (req, res) => {
   try {
-    const search = req.query.search as string;
+    const search = parseSearch(req.query.search);
 
     const whereConditions = search
       ? [{ ime: Like(`%${search}%`) }, { prezime: Like(`%${search}%`) }]
       : {};
 
     const menadzeri = await menadzerRepo.find({
-      select: ["id", "ime", "prezime"],
+      select: ["id", "ime", "prezime", "procenat"],
       ...(search && { where: whereConditions }),
       order: { ime: "ASC", prezime: "ASC" },
     });
 
+    // "procenat" se koristi da se pri upisu učenika polje samo popuni
     const dropdownData = menadzeri.map((m) => ({
       value: m.id,
       label: `${m.ime} ${m.prezime}`,
+      procenat: m.procenat,
     }));
 
     res.json(dropdownData);
@@ -163,12 +229,25 @@ router.get("/dropdown", async (req, res) => {
     res.status(500).json({ error: "Greška servera" });
   }
 });
+// Procenat mora biti ceo broj između 0 i 100
+function isValidProcenat(procenat: any): boolean {
+  if (procenat === undefined) return true;
+  const broj = Number(procenat);
+  return Number.isInteger(broj) && broj >= 0 && broj <= 100;
+}
+
 router.post("/", async (req, res) => {
   try {
     if (Array.isArray(req.body)) {
       return res
         .status(400)
         .json({ error: "Očekivan je objekat menadžera, a ne niz" });
+    }
+
+    if (!isValidProcenat(req.body?.procenat)) {
+      return res
+        .status(400)
+        .json({ error: "Procenat mora biti ceo broj između 0 i 100" });
     }
 
     const novi = menadzerRepo.create(req.body);
@@ -189,6 +268,7 @@ router.post("/", async (req, res) => {
       id: menadzerSaStudentima.id,
       ime: menadzerSaStudentima.ime,
       prezime: menadzerSaStudentima.prezime,
+      procenat: menadzerSaStudentima.procenat,
       datumKreiranja: menadzerSaStudentima.datumKreiranja,
       datumIzmene: menadzerSaStudentima.datumIzmene,
       students: menadzerSaStudentima.students,
@@ -204,6 +284,12 @@ router.post("/", async (req, res) => {
 router.patch("/:id", async (req, res) => {
   try {
     const menadzerId = parseInt(req.params.id);
+
+    if (!isValidProcenat(req.body?.procenat)) {
+      return res
+        .status(400)
+        .json({ error: "Procenat mora biti ceo broj između 0 i 100" });
+    }
 
     const updateResult = await menadzerRepo.update(menadzerId, req.body);
 
@@ -224,6 +310,7 @@ router.patch("/:id", async (req, res) => {
       id: updatedManager.id,
       ime: updatedManager.ime,
       prezime: updatedManager.prezime,
+      procenat: updatedManager.procenat,
       datumKreiranja: updatedManager.datumKreiranja,
       datumIzmene: updatedManager.datumIzmene,
       students: updatedManager.students,
@@ -274,7 +361,7 @@ router.get("/isplate/:id", async (req, res) => {
 
 //         const currentPage = parseInt(page as string);
 //         const itemsPerPage = parseInt(limit as string);
-//         const searchTerm = (search as string).trim();
+//         const searchTerm = parseSearch(search);
 
 //         let whereCondition: any = {};
 
@@ -544,7 +631,7 @@ router.get("/:id", async (req, res) => {
   const id = req.params.id as unknown as number;
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const search = (req.query.search as string) || "";
+  const search = parseSearch(req.query.search);
   const skip = (page - 1) * limit;
 
   try {
@@ -594,8 +681,10 @@ router.get("/:id", async (req, res) => {
       return {
         id: ucenik.id,
         imeIPrezime: ucenik.ime + " " + ucenik.prezime,
-        zanimanje: ucenik.occupation.name,
-        skola: ucenik.occupation.school.name,
+        // Učenik može ostati bez zanimanja (npr. ako je смер обрисан),
+        // pa se ne sme приступати без провере
+        zanimanje: ucenik.occupation?.name ?? "—",
+        skola: ucenik.occupation?.school?.name ?? "—",
       };
     });
 
@@ -696,8 +785,8 @@ router.get("/:id/students/details", async (req, res) => {
           imeIPrezimeUcenika: y.ime + " " + y.prezime,
           zarada: ukupnaZarada,
           placeno: statusPlacanja,
-          zanimanje: y.occupation.name,
-          skola: y.occupation.school.name,
+          zanimanje: y.occupation?.name ?? "—",
+          skola: y.occupation?.school?.name ?? "—",
           placeniIznos: placenoZaUcenika,
           preostalo: ukupnaZarada - placenoZaUcenika,
         };

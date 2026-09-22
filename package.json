@@ -13,10 +13,16 @@
     "typeorm": "ts-node ./node_modules/typeorm/cli.js",
     "migration:generate": "npm run typeorm -- -d src/data-source.ts migration:generate",
     "migration:run": "npm run typeorm -- -d src/data-source.ts migration:run",
+    "migration:show": "npm run typeorm -- -d src/data-source.ts migration:show",
     "migration:revert": "npm run typeorm -- -d src/data-source.ts migration:revert",
     "seed": "ts-node src/seed/seedForStudens.ts",
     "seed:schools": "ts-node src/seed/seedSchoolsAndOccupations.ts",
-    "seed:dositej": "ts-node src/seed/addDositejOccupations.ts"
+    "seed:dositej": "ts-node src/seed/addDositejOccupations.ts",
+    "test:filter": "ts-node src/tests/studentTypeFilter.test.ts",
+    "test:filters": "ts-node src/tests/filters.test.ts",
+    "test:pretraga": "ts-node src/tests/pretragaImena.test.ts",
+    "test:obracun": "ts-node src/tests/obracun.test.ts",
+    "test:obracun:baza": "ts-node src/tests/obracunBaza.test.ts"
   },
   "keywords": [],
   "author": "",

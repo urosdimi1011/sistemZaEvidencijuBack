@@ -23,6 +23,12 @@ export class User {
     @Column()
     role!: 'admin' | 'school_manager' | 'korisnik'; // Dodajte druge role po potrebi
 
+    // Koju vrstu upisa nalog obrađuje. Odnosi se samo na school_manager naloge:
+    // nalog vidi i unosi isključivo učenike tog tipa. Kod admina i
+    // računovođe je NULL — oni vide sve.
+    @Column({ type: 'varchar', nullable: true, default: null })
+    tipUpisa!: 'redovni' | 'vandredni' | null;
+
 
     @ManyToOne(() => School, (school) => school.users, { nullable: true })
     @JoinColumn({ name: 'schoolId' })

@@ -46,11 +46,25 @@ export class Student {
     @Column({ type: 'text', nullable: true })
     note!: string | null;
 
+    // Datum kada je administrator obradio napomenu. NULL znači da je napomena
+    // još neobrađena i da se u spisku ističe. Poništava se kad se napomena izmeni.
+    @Column('timestamp', { nullable: true, default: null })
+    noteHandledAt!: Date | null;
+
+    // Cena literature (50) ako ju je učenik uzeo. Ne ulazi u cenu školovanja
+    // niti u obračun sa menadžerom — naplaćuje se i evidentira odvojeno.
     @Column('int',{
         nullable: true,
         default: null
     })
     literature!: number | null;
+
+    // Datum kada je literatura plaćena. NULL znači da još nije plaćena.
+    @Column('timestamp', {
+        nullable: true,
+        default: null
+    })
+    literaturePaidAt!: Date | null;
 
     
     @Column('varchar',{

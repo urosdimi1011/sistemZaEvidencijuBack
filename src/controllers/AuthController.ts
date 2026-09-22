@@ -6,31 +6,6 @@ import { User } from '../entity/User';
 
 const userRepository = AppDataSource.getRepository(User);
 
-export const register = async (req: Request, res: Response) => {
-    try {
-        const { email, password, role } = req.body;
-
-        const existingUser = await userRepository.findOne({ where: { email } });
-        if (existingUser) {
-            return res.status(400).json({ message: 'Email već postoji' });
-        }
-
-        const hashedPassword = await bcrypt.hash(password, 12);
-        const user = userRepository.create({
-            email,
-            password: hashedPassword,
-            role
-        });
-
-        await userRepository.save(user);
-        res.status(201).json({ message: 'Korisnik uspešno registrovan' });
-    }
-    catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Greška prilikom registracije' });
-    }
-};
-
 export const login = async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
@@ -49,6 +24,7 @@ export const login = async (req: Request, res: Response) => {
                 id: user.id,
                 role: user.role,
                 schoolId: user.schoolId,
+                tipUpisa: user.tipUpisa,
                 email: user.email,
                 school: user.school
             },
@@ -61,6 +37,7 @@ export const login = async (req: Request, res: Response) => {
             email: user.email,
             role: user.role,
             schoolId: user.schoolId,
+            tipUpisa: user.tipUpisa,
             school: user.school
         }
 

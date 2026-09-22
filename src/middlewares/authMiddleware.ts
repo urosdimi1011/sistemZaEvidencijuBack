@@ -5,6 +5,7 @@ export interface AuthenticatedRequest extends Request {
         userId: number;
         schoolId: number | null;
         role: string;
+        tipUpisa?: 'redovni' | 'vandredni' | null;
     };
 }
 
@@ -25,6 +26,18 @@ export const auth = () => {
         } catch (err) {
             return res.status(401).json({ message: 'Nevažeći token' });
         }
+    };
+};
+
+// Upravljanje korisničkim nalozima sme samo administrator
+export const adminOnly = () => {
+    return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({
+                message: 'Samo administrator može da upravlja korisničkim nalozima',
+            });
+        }
+        next();
     };
 };
 

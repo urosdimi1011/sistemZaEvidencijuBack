@@ -3,119 +3,76 @@
 import { Router } from "express";
 import { AppDataSource } from "../data-source";
 import { Student } from "../entity/Student";
-import { Between, FindOptionsWhere, ILike } from "typeorm";
+import { Between, FindOptionsWhere, ILike, IsNull, Not } from "typeorm";
 import { object } from "yup";
 import { Payment } from "../entity/Payment";
 import { ManagerPayment } from "../entity/ManagerPayment";
+import { Menadzer } from "../entity/Menadzer";
 import { searchVariants } from "../utiles/transliterate";
+import {
+  buildStudentWhere,
+  parsePagination,
+  parseSortBy,
+  parseSortOrder,
+  parseSchoolId,
+  parseSearch,
+  parseDanOpseg,
+} from "../utiles/studentFilters";
+import {
+  getSchoolYearForDate,
+  getSchoolYearLabel,
+  getSchoolYearRange,
+} from "../utiles/schoolYear";
+import { obracunUcenika } from "../utiles/obracun";
 
 const router = Router();
 const studentiRepo = AppDataSource.getRepository(Student);
+
+// Vrsta upisa koju nalog obrađuje. Samo nalozi škole su vezani za vrstu;
+// admin i računovođa vide sve, pa za njih vraća null.
+function tipUpisaZaNalog(user: any): "redovni" | "vandredni" | null {
+  if (user?.role !== "school_manager") return null;
+  return user?.tipUpisa === "redovni" || user?.tipUpisa === "vandredni"
+    ? user.tipUpisa
+    : null;
+}
 const paymentRepo = AppDataSource.getRepository(Payment);
 
 router.get("/", async (req, res) => {
   try {
-    const searchTerm = (req.query.search as string)?.trim();
-    const datePicker = (req.query.date as string)?.trim();
-    const typeTerm = (req.query.type as string)?.trim();
-    let schoolIdTerm = (req.query.schoolId as string)?.trim();
-
-    // school_manager sme da vidi samo učenike svoje škole — ne veruj klijentu
     const requestUser = (req as any).user;
-    if (requestUser?.role === "school_manager" && requestUser?.schoolId) {
-      schoolIdTerm = String(requestUser.schoolId);
+
+    // Obrada i provera svih parametara je izdvojena u utiles/studentFilters,
+    // da bi mogla da se testira i da nevalidan unos ne obori upit
+    const { page, limit, offset } = parsePagination(req.query);
+    const finalSortBy = parseSortBy(req.query.sortBy);
+    const sortOrder = parseSortOrder(req.query.sortOrder);
+
+    // Nevalidan datum se odbija odmah, umesto da se tiho ignoriše
+    if (
+      typeof req.query.date === "string" &&
+      req.query.date.trim() &&
+      !parseDanOpseg(req.query.date)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Nevalidan format datuma. Koristite YYYY-MM-DD" });
     }
 
-    let where: FindOptionsWhere<Student> | FindOptionsWhere<Student>[] = {};
+    const finalWhere = buildStudentWhere({
+      search: req.query.search,
+      date: req.query.date,
+      type: req.query.type,
+      schoolId: req.query.schoolId,
+      schoolYear: req.query.schoolYear,
+      napomena: req.query.napomena,
+      user: requestUser,
+    });
 
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.min(
-      100,
-      Math.max(1, parseInt(req.query.limit as string) || 20)
-    );
-    const offset = (page - 1) * limit;
-
-    // Sortiranje parametri
-    const sortBy = (req.query.sortBy as string) || "createdAt";
-    const sortOrder = (req.query.sortOrder as "ASC" | "DESC") || "DESC";
-
-    let baseWhere: FindOptionsWhere<Student> = {};
-
-    if (schoolIdTerm) {
-      baseWhere.occupation = {
-        school: {
-          id: Number(schoolIdTerm),
-        },
-      };
-    }
-
-    // Filter po tipu učenika (redovni / vandredni)
-    if (typeTerm && ["redovni", "vandredni"].includes(typeTerm)) {
-      baseWhere.type = typeTerm as "redovni" | "vandredni";
-    }
-
-    if (datePicker) {
-      const selectedDate = new Date(datePicker);
-
-      if (isNaN(selectedDate.getTime())) {
-        return res
-          .status(400)
-          .json({ message: "Nevalidan format datuma. Koristite YYYY-MM-DD" });
-      }
-
-      const startOfDay = new Date(selectedDate);
-      startOfDay.setHours(0, 0, 0, 0);
-
-      const endOfDay = new Date(selectedDate);
-      endOfDay.setHours(23, 59, 59, 999);
-
-      baseWhere.createdAt = Between(startOfDay, endOfDay);
-    }
-
-    let finalWhere: FindOptionsWhere<Student> | FindOptionsWhere<Student>[];
-
-    if (searchTerm) {
-      const terms = searchTerm.split(/\s+/).filter((t) => t.length > 0);
-      const searchConditions: FindOptionsWhere<Student>[] = [];
-
-      // Svaki pojam se pretražuje u svim pismima (latinica + ćirilica),
-      // ILike = ne razlikuje velika i mala slova
-      terms.forEach((term) => {
-        searchVariants(term).forEach((variant) => {
-          searchConditions.push(
-            { ...baseWhere, ime: ILike(`%${variant}%`) },
-            { ...baseWhere, prezime: ILike(`%${variant}%`) }
-          );
-        });
-      });
-
-      if (terms.length >= 2) {
-        for (const v0 of searchVariants(terms[0])) {
-          for (const v1 of searchVariants(terms[1])) {
-            searchConditions.push(
-              {
-                ...baseWhere,
-                ime: ILike(`%${v0}%`),
-                prezime: ILike(`%${v1}%`),
-              },
-              {
-                ...baseWhere,
-                ime: ILike(`%${v1}%`),
-                prezime: ILike(`%${v0}%`),
-              }
-            );
-          }
-        }
-      }
-      finalWhere = searchConditions;
-    } else {
-      finalWhere = baseWhere;
-    }
-
-    const allowedSortFields = ["createdAt", "ime", "prezime", "cenaSkolarine"];
-    const finalSortBy = allowedSortFields.includes(sortBy)
-      ? sortBy
-      : "createdAt";
+    const searchTerm = parseSearch(req.query.search);
+    const datePicker =
+      typeof req.query.date === "string" ? req.query.date.trim() : "";
+    const schoolIdTerm = parseSchoolId(req.query.schoolId);
 
     const order: any = {};
     order[finalSortBy] = sortOrder;
@@ -133,19 +90,9 @@ router.get("/", async (req, res) => {
     });
 
     const result = studenti.map((m) => {
-      const totalPaid = m.payments.reduce(
-        (sum, payment) => sum + Number(payment.amount),
-        0
-      );
-      const managerPayouts = m.managerPayouts.reduce(
-        (sum, payout) => sum + Number(payout.amount),
-        0
-      );
-
-      const totalDebt = Number(m.cenaSkolarine) + (m.literature || 0);
-      
-      // ISPRAVLJENA LOGIKA: preostaliDug = totalDebt - (totalPaid - managerPayouts)
-      const preostaliDug = totalDebt - totalPaid - managerPayouts;
+      // Literatura se naplaćuje odvojeno i ne ulazi u cenu školovanja.
+      // Preplata se ne prikazuje u minusu nego kao izmireno.
+      const obracun = obracunUcenika(m);
 
       return {
         id: m.id,
@@ -156,6 +103,8 @@ router.get("/", async (req, res) => {
         type: m?.type,
         entry_type: m?.entry_type,
         note: m?.note,
+        noteHandled: !!m?.noteHandledAt,
+        noteHandledAt: m?.noteHandledAt,
         createdAt: m?.createdAt,
         literature: m.literature ? true : false,
         zanimanje: m.occupation
@@ -166,10 +115,11 @@ router.get("/", async (req, res) => {
           : null,
         cenaSkolarine: m.cenaSkolarine,
         literatureCost: m.literature || 0,
-        ukupanDug: totalDebt,
-        preostaliDug: preostaliDug,
-        preostaliDugZaMenadzera:
-          m.cenaSkolarine * (Number(m.procenatManagera) / 100) - managerPayouts,
+        literaturePaidAt: m.literaturePaidAt,
+        literaturePaid: !!m.literaturePaidAt,
+        ukupanDug: obracun.ukupanDug,
+        preostaliDug: obracun.preostaliDug,
+        preostaliDugZaMenadzera: obracun.preostaloMenadzeru,
         procenatMenadzeru: m.procenatManagera,
         menadzer: m.menadzer,
         schoolId: m.occupation?.school?.id,
@@ -193,7 +143,7 @@ router.get("/", async (req, res) => {
       filters: {
         search: searchTerm || null,
         date: datePicker || null,
-        schoolId: schoolIdTerm ? Number(schoolIdTerm) : null,
+        schoolId: schoolIdTerm,
       },
       sorting: {
         sortBy: finalSortBy,
@@ -228,8 +178,23 @@ router.get("/stats", async (req, res) => {
       };
     }
 
+    // Brojač prati ono što nalog zaista vidi
+    const tipUpisaNaloga = tipUpisaZaNalog(requestUser);
+    if (tipUpisaNaloga) {
+      where.type = tipUpisaNaloga;
+    }
+
+    // Broj učenika se računa za tekuću školsku godinu (1.9. - 31.8.),
+    // brojanje kreće ispočetka svakog 1. septembra
+    const schoolYearStart = getSchoolYearForDate(new Date());
+    const { start: schoolYearFrom, end: schoolYearTo } =
+      getSchoolYearRange(schoolYearStart);
+
     const totalCount = await studentiRepo.count({
-      where,
+      where: {
+        ...where,
+        createdAt: Between(schoolYearFrom, schoolYearTo),
+      },
       relations: ["occupation.school"],
     });
 
@@ -246,9 +211,31 @@ router.get("/stats", async (req, res) => {
       relations: ["occupation.school"],
     });
 
+    // Školske godine za koje uopšte ima upisa (za birač iznad табеле)
+    const rasponUpisa = await studentiRepo
+      .createQueryBuilder("s")
+      .select("MIN(s.createdAt)", "min")
+      .addSelect("MAX(s.createdAt)", "max")
+      .getRawOne();
+
+    const availableSchoolYears: number[] = [];
+    if (rasponUpisa?.min && rasponUpisa?.max) {
+      const prva = getSchoolYearForDate(new Date(rasponUpisa.min));
+      const poslednja = Math.max(
+        getSchoolYearForDate(new Date(rasponUpisa.max)),
+        schoolYearStart
+      );
+      for (let g = poslednja; g >= prva; g--) availableSchoolYears.push(g);
+    } else {
+      availableSchoolYears.push(schoolYearStart);
+    }
+
     res.json({
       totalStudents: totalCount,
       todayStudents: todayCount,
+      schoolYear: getSchoolYearLabel(schoolYearStart),
+      schoolYearStart,
+      availableSchoolYears,
       timestamp: new Date(),
     });
   } catch (error) {
@@ -270,23 +257,16 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ message: "Student nije pronađen" });
     }
     
-    const totalPaid = student.payments.reduce(
-      (sum, payment) => sum + Number(payment.amount),
-      0
-    );
-    const totalDebt = Number(student.cenaSkolarine) + (student.literature || 0);
-    const managerPayouts = student.managerPayouts.reduce(
-      (sum, payout) => sum + Number(payout.amount),
-      0
-    );
-    
-    // ISPRAVLJENA LOGIKA: remainingAmount = totalDebt - (totalPaid - managerPayouts)
-    const remainingAmount = totalDebt - totalPaid - managerPayouts;
-    
-    const commissionAmount =
-      Number(student.cenaSkolarine) * (Number(student.procenatManagera) / 100);
+    // Literatura se naplaćuje odvojeno i ne ulazi u cenu školovanja.
+    // Dug se ne prikazuje u minusu nego kao izmireno, a višak kao preplata.
+    const obracun = obracunUcenika(student);
 
-    const remainingForManager = commissionAmount - managerPayouts;
+    const totalDebt = obracun.ukupanDug;
+    const totalPaid = obracun.uplaceno;
+    const remainingAmount = obracun.preostaliDug;
+    const preplata = obracun.preplata;
+    const commissionAmount = obracun.provizijaMenadzera;
+    const remainingForManager = obracun.preostaloMenadzeru;
 
     res.json({
       student: {
@@ -301,13 +281,19 @@ router.get("/:id", async (req, res) => {
         type: student?.type,
         entry_type: student?.entry_type,
         note: student?.note,
+        noteHandled: !!student?.noteHandledAt,
+        noteHandledAt: student?.noteHandledAt,
         literature: student.literature ? true : false,
+        literatureCost: student.literature || 0,
+        literaturePaidAt: student.literaturePaidAt,
+        literaturePaid: !!student.literaturePaidAt,
         preostaloMenadzeru: remainingForManager,
         managerId: student.managerId,
         payments: {
           ukupanDug: totalDebt,
           totalPaid,
           remainingAmount,
+          preplata,
           installments: student.payments,
         },
         managerPayments: {
@@ -323,30 +309,63 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// Administracija škole (school_manager) sme da unese samo 0% ili 20% za menadžera
-function isValidPercentForSchoolManager(req: any, procenat: any): boolean {
+// Administracija škole (school_manager) ne sme sama da određuje procenat —
+// dozvoljeno je 0% ili tačno onoliko koliko iznosi procenat izabranog menadžera
+async function isValidPercentForSchoolManager(
+  req: any,
+  procenat: any,
+  managerId: any
+): Promise<boolean> {
   if (req.user?.role !== "school_manager") return true;
   if (procenat === null || procenat === undefined || procenat === "") return true;
-  return [0, 20].includes(Number(procenat));
+
+  const unetiProcenat = Number(procenat);
+  if (unetiProcenat === 0) return true;
+  if (!managerId) return false;
+
+  const menadzer = await AppDataSource.getRepository(Menadzer).findOne({
+    where: { id: Number(managerId) },
+  });
+
+  return !!menadzer && unetiProcenat === menadzer.procenat;
 }
 
 router.post("/", async (req, res) => {
   try {
-    if (!isValidPercentForSchoolManager(req, req.body?.procenatManagera)) {
+    const dozvoljenProcenat = await isValidPercentForSchoolManager(
+      req,
+      req.body?.procenatManagera,
+      req.body?.managerId
+    );
+    if (!dozvoljenProcenat) {
       return res.status(400).json({
-        error: { detail: "Dozvoljen procenat za menadžera je 0% ili 20%" },
+        error: {
+          detail:
+            "Procenat mora biti 0% ili procenat koji je određen za izabranog menadžera",
+        },
       });
     }
 
-    const dataForSend = object(req.body).fields;
+    const dataForSend: any = object(req.body).fields;
 
-    console.log(dataForSend.createdAt);
-    const datum  = dataForSend.createdAt as unknown as string ;
-  const novi = studentiRepo.create({
-    ...dataForSend,
-    literature: dataForSend.literature ? 50 : null,
-    createdAt: dataForSend.createdAt ? new Date(datum) : new Date()
-  });
+    // Nalog vezan za vrstu upisa ne bira tip — nameće mu se prema nalogu.
+    // Redovni učenici nemaju tip upisa ni literaturu.
+    const tipUpisaNaloga = tipUpisaZaNalog((req as any).user);
+    if (tipUpisaNaloga) {
+      dataForSend.type = tipUpisaNaloga;
+    }
+    if (dataForSend.type === "redovni") {
+      dataForSend.entry_type = null;
+      dataForSend.literature = null;
+    }
+
+    const datum = dataForSend.createdAt as unknown as string;
+    const podaciZaUpis = {
+      ...dataForSend,
+      literature: dataForSend.literature ? 50 : null,
+      createdAt: dataForSend.createdAt ? new Date(datum) : new Date(),
+    } as Student;
+    const novi = studentiRepo.create(podaciZaUpis);
     const sacuvan = await studentiRepo.save(novi);
     let studentSaMenadzerom = await studentiRepo.findOne({
       where: { id: sacuvan.id },
@@ -357,18 +376,8 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ message: "Student nije pronađen" });
     }
 
-    const totalPaid = studentSaMenadzerom.payments.reduce(
-      (sum, payment) => sum + Number(payment.amount),
-      0
-    );
-    const managerPayouts = studentSaMenadzerom.managerPayouts.reduce(
-      (sum, payout) => sum + Number(payout.amount),
-      0
-    );
-    const totalDebt = Number(studentSaMenadzerom.cenaSkolarine) + (studentSaMenadzerom.literature || 0);
-    
-    // ISPRAVLJENA LOGIKA
-    const preostaliDug = totalDebt - totalPaid - managerPayouts;
+    // Literatura se naplaćuje odvojeno i ne ulazi u cenu školovanja
+    const preostaliDug = obracunUcenika(studentSaMenadzerom).preostaliDug;
 
     const result = {
       id: studentSaMenadzerom.id,
@@ -379,6 +388,9 @@ router.post("/", async (req, res) => {
       entry_type: studentSaMenadzerom?.entry_type,
       note: studentSaMenadzerom?.note,
       literature: studentSaMenadzerom.literature ? true : false,
+      literatureCost: studentSaMenadzerom.literature || 0,
+      literaturePaidAt: studentSaMenadzerom.literaturePaidAt,
+      literaturePaid: !!studentSaMenadzerom.literaturePaidAt,
       imeRoditelja: studentSaMenadzerom.imeRoditelja,
       zanimanje: studentSaMenadzerom.occupation
         ? {
@@ -408,10 +420,18 @@ router.patch("/:id", async (req, res) => {
     const studentId = parseInt(req.params.id);
     const dataForSend = req.body;
 
-    if (!isValidPercentForSchoolManager(req, dataForSend?.procenatManagera)) {
+    const dozvoljenProcenat = await isValidPercentForSchoolManager(
+      req,
+      dataForSend?.procenatManagera,
+      dataForSend?.managerId
+    );
+    if (!dozvoljenProcenat) {
       await queryRunner.rollbackTransaction();
       return res.status(400).json({
-        error: { detail: "Dozvoljen procenat za menadžera je 0% ili 20%" },
+        error: {
+          detail:
+            "Procenat mora biti 0% ili procenat koji je određen za izabranog menadžera",
+        },
       });
     }
 
@@ -465,6 +485,25 @@ router.patch("/:id", async (req, res) => {
       dataForSend.imeRoditelja = null;
     }
 
+    // Izmenjena napomena se ponovo smatra neobrađenom, da nova poruka
+    // menadžera ne bi ostala neprimećena pod ranije skinutom oznakom
+    if (
+      dataForSend.note !== undefined &&
+      (dataForSend.note || null) !== (currentStudent.note || null)
+    ) {
+      dataForSend.noteHandledAt = null;
+    }
+
+    // Nalog vezan za vrstu upisa ne može da promeni tip učenika
+    const tipUpisaNalogaZaIzmenu = tipUpisaZaNalog((req as any).user);
+    if (tipUpisaNalogaZaIzmenu) {
+      dataForSend.type = tipUpisaNalogaZaIzmenu;
+    }
+    if (dataForSend.type === "redovni") {
+      dataForSend.entry_type = null;
+      dataForSend.literature = null;
+    }
+
     await queryRunner.manager.update(Student, studentId, dataForSend);
 
     const updatedStudent = await queryRunner.manager.findOne(Student, {
@@ -475,18 +514,10 @@ router.patch("/:id", async (req, res) => {
     await queryRunner.commitTransaction();
 
     if (updatedStudent) {
-      const totalPaid = updatedStudent.payments.reduce(
-        (sum, payment) => sum + Number(payment.amount),
-        0
-      );
-      const managerPayouts = updatedStudent.managerPayouts.reduce(
-        (sum, payout) => sum + Number(payout.amount),
-        0
-      );
-      const totalDebt = Number(updatedStudent.cenaSkolarine) + (updatedStudent.literature || 0);
-      
-      // ISPRAVLJENA LOGIKA
-      const preostaliDug = totalDebt - (totalPaid - managerPayouts);
+      // Literatura se naplaćuje odvojeno i ne ulazi u cenu školovanja.
+      // NAPOMENA: ovde se koristi druga formula nego u spisku učenika —
+      // isplata menadžeru ovde UVEĆAVA dug. Zatečeno stanje, nije menjano.
+      const preostaliDug = obracunUcenika(updatedStudent, "vrati").preostaliDug;
 
       const result = {
         id: updatedStudent?.id,
@@ -498,6 +529,9 @@ router.patch("/:id", async (req, res) => {
         entry_type: updatedStudent?.entry_type,
         note: updatedStudent?.note,
         literature: updatedStudent.literature ? true : false,
+        literatureCost: updatedStudent.literature || 0,
+        literaturePaidAt: updatedStudent.literaturePaidAt,
+        literaturePaid: !!updatedStudent.literaturePaidAt,
         zanimanje: updatedStudent.occupation
           ? {
               name: updatedStudent.occupation.name,
@@ -521,6 +555,96 @@ router.patch("/:id", async (req, res) => {
     res.status(500).json({ error: "Greška pri ažuriranju studenta" });
   } finally {
     await queryRunner.release();
+  }
+});
+
+// Administrator označava napomenu kao obrađenu (ili je vraća u neobrađene)
+router.patch("/:id/napomena", async (req, res) => {
+  try {
+    if ((req as any).user?.role !== "admin") {
+      return res
+        .status(403)
+        .json({ message: "Samo administrator može da obradi napomenu" });
+    }
+
+    const studentId = parseInt(req.params.id);
+    if (isNaN(studentId)) {
+      return res.status(400).json({ message: "Nevalidan ID učenika" });
+    }
+
+    const student = await studentiRepo.findOne({ where: { id: studentId } });
+    if (!student) {
+      return res.status(404).json({ message: "Učenik nije pronađen" });
+    }
+
+    if (!student.note) {
+      return res.status(400).json({ message: "Učenik nema napomenu" });
+    }
+
+    const obradjeno = req.body?.obradjeno === true;
+    student.noteHandledAt = obradjeno ? new Date() : null;
+    await studentiRepo.save(student);
+
+    res.json({
+      message: obradjeno
+        ? "Napomena je označena kao obrađena"
+        : "Napomena je vraćena među neobrađene",
+      noteHandled: !!student.noteHandledAt,
+      noteHandledAt: student.noteHandledAt,
+    });
+  } catch (error) {
+    console.error("Greška pri obradi napomene:", error);
+    res
+      .status(500)
+      .json({ message: "Došlo je do greške pri obradi napomene" });
+  }
+});
+
+// Evidencija naplate literature — vodi se odvojeno od školarine
+router.patch("/:id/literatura", async (req, res) => {
+  try {
+    const studentId = parseInt(req.params.id);
+    if (isNaN(studentId)) {
+      return res.status(400).json({ message: "Nevalidan ID učenika" });
+    }
+
+    const student = await studentiRepo.findOne({ where: { id: studentId } });
+    if (!student) {
+      return res.status(404).json({ message: "Učenik nije pronađen" });
+    }
+
+    if (!student.literature) {
+      return res
+        .status(400)
+        .json({ message: "Učenik nije uzeo literaturu" });
+    }
+
+    const placeno = req.body?.placeno === true;
+
+    let datumPlacanja: Date | null = null;
+    if (placeno) {
+      datumPlacanja = req.body?.datum ? new Date(req.body.datum) : new Date();
+      if (isNaN(datumPlacanja.getTime())) {
+        return res.status(400).json({ message: "Neispravan format datuma." });
+      }
+    }
+
+    student.literaturePaidAt = datumPlacanja;
+    await studentiRepo.save(student);
+
+    res.json({
+      message: placeno
+        ? "Literatura je evidentirana kao plaćena"
+        : "Literatura je evidentirana kao neplaćena",
+      literatureCost: student.literature,
+      literaturePaid: !!student.literaturePaidAt,
+      literaturePaidAt: student.literaturePaidAt,
+    });
+  } catch (error) {
+    console.error("Greška pri evidenciji naplate literature:", error);
+    res
+      .status(500)
+      .json({ message: "Došlo je do greške pri evidenciji naplate literature" });
   }
 });
 

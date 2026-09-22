@@ -17,6 +17,11 @@ export class Menadzer {
     @Column()
     prezime!: string;
 
+    // Podrazumevani procenat menadžera — prepisuje se na učenika pri upisu.
+    // Izmena ovde važi samo za buduće upise; već upisani učenici zadržavaju svoj procenat.
+    @Column('int', { default: 20 })
+    procenat!: number;
+
     @CreateDateColumn()
     datumKreiranja!: Date;
 

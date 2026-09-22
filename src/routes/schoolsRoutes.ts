@@ -38,6 +38,20 @@ router.get('/:id/occupations', async (_req, res) => {
         },
     );
 
+    if (!schools) {
+        return res.status(404).json({ message: 'Škola nije pronađena' });
+    }
+
+    // Redovnim učenicima se nudi samo određen skup zanimanja; vanrednima sva.
+    // Nalog vezan za vrstu upisa ne može da zaobiđe ovo preko parametra.
+    const user = (_req as any).user;
+    const tipNaloga = user?.role === 'school_manager' ? user?.tipUpisa : null;
+    const trazeniTip = tipNaloga || (_req.query.tip as string);
+
+    if (trazeniTip === 'redovni') {
+        schools.occupations = schools.occupations.filter((o) => o.zaRedovne);
+    }
+
     res.json(schools);
 });
 

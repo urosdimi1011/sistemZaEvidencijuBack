@@ -34,6 +34,7 @@ router.get('/', async (req: Request, res: Response) => {
                 email: true,
                 role: true,
                 schoolId: true,
+                tipUpisa: true,
                 createdAt: true,
                 updatedAt: true,
                 // Ne vraćamo password iz bezbednosnih razloga
@@ -46,6 +47,7 @@ router.get('/', async (req: Request, res: Response) => {
             email: user.email,
             role: user.role,
             schoolId: user.schoolId,
+            tipUpisa: user.tipUpisa,
             schoolName: user.school ? user.school.name : null,
             createdAt: user.createdAt,
             updatedAt: user.updatedAt
@@ -75,6 +77,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 email: true,
                 role: true,
                 schoolId: true,
+                tipUpisa: true,
                 createdAt: true,
                 updatedAt: true,
                 password: false
@@ -90,6 +93,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             email: user.email,
             role: user.role,
             schoolId: user.schoolId,
+            tipUpisa: user.tipUpisa,
             schoolName: user.school ? user.school.name : null,
             createdAt: user.createdAt,
             updatedAt: user.updatedAt
@@ -109,7 +113,7 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Očekivan je objekat korisnika, a ne niz' })
         }
 
-        const { email, passwordMy, role, schoolId } = req.body
+        const { email, passwordMy, role, schoolId, tipUpisa } = req.body
 
         // Validacija obaveznih polja
         if (!email || !role || !passwordMy) {
@@ -138,11 +142,19 @@ router.post('/', async (req: Request, res: Response) => {
         const saltRounds = 10
         const hashedPassword = await bcrypt.hash(passwordMy, saltRounds)
 
+        // Vrsta upisa se odnosi samo na naloge škole
+        const validTipovi = ['redovni', 'vandredni']
+        const tipUpisaZaUpis =
+            role === 'school_manager' && validTipovi.includes(tipUpisa)
+                ? tipUpisa
+                : null
+
         const noviKorisnik = userRepo.create({
             email,
             password: hashedPassword,
             role,
-            schoolId: schoolId || null
+            schoolId: schoolId || null,
+            tipUpisa: tipUpisaZaUpis
         })
 
         const sacuvanKorisnik = await userRepo.save(noviKorisnik)
@@ -155,6 +167,7 @@ router.post('/', async (req: Request, res: Response) => {
                 email: true,
                 role: true,
                 schoolId: true,
+                tipUpisa: true,
                 createdAt: true,
                 updatedAt: true,
                 password: false
@@ -170,6 +183,7 @@ router.post('/', async (req: Request, res: Response) => {
             email: korisnikSaRelacijama.email,
             role: korisnikSaRelacijama.role,
             schoolId: korisnikSaRelacijama.schoolId,
+            tipUpisa: korisnikSaRelacijama.tipUpisa,
             schoolName: korisnikSaRelacijama.school ? korisnikSaRelacijama.school.name : null,
             createdAt: korisnikSaRelacijama.createdAt,
             updatedAt: korisnikSaRelacijama.updatedAt
@@ -197,11 +211,15 @@ router.patch('/:id', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Nevalidan ID korisnika' })
         }
 
-        const { email, passwordMy, role, schoolId } = req.body
+        const { email, passwordMy, role, schoolId, tipUpisa } = req.body
         const updateData: any = {}
 
         // Dodavanje polja koja treba ažurirati
         if (email !== undefined) updateData.email = email
+        if (tipUpisa !== undefined) {
+            const validTipovi = ['redovni', 'vandredni']
+            updateData.tipUpisa = validTipovi.includes(tipUpisa) ? tipUpisa : null
+        }
         if (role !== undefined) {
             const validRoles = ['admin', 'school_manager', 'racunovodja']
             if (!validRoles.includes(role)) {
@@ -241,6 +259,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
                 email: true,
                 role: true,
                 schoolId: true,
+                tipUpisa: true,
                 createdAt: true,
                 updatedAt: true,
                 password: false
@@ -256,6 +275,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
             email: updatedUser.email,
             role: updatedUser.role,
             schoolId: updatedUser.schoolId,
+            tipUpisa: updatedUser.tipUpisa,
             schoolName: updatedUser.school ? updatedUser.school.name : null,
             createdAt: updatedUser.createdAt,
             updatedAt: updatedUser.updatedAt

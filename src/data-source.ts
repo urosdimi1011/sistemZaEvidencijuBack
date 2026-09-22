@@ -17,14 +17,20 @@ export const AppDataSource = new DataSource({
     database: process.env.DB_NAME,
     port: Number(process.env.DB_PORT),
     entities: [Menadzer,Student,Payment,ManagerPayment,User,School,Occupation],
-    migrations:
-        process.env.NODE_ENV === "production"
-            ? [path.join(__dirname, "migrations/*.js")]
-            : [path.join(__dirname, "migrations/*.ts")],
+    // Oba obrasca su navedena namerno: kad se pokreće preko ts-node, __dirname
+    // je "src" i tamo postoje samo .ts fajlovi; kad se pokreće prevedeni kod,
+    // __dirname je "dist" i tamo su samo .js. Tako избор не зависи од NODE_ENV.
+    migrations: [
+        path.join(__dirname, "migrations/*.js"),
+        path.join(__dirname, "migrations/*.ts"),
+    ],
     synchronize: false,
-    ssl: process.env.NODE_ENV === 'production' ? {
-        rejectUnauthorized: false // 👈 Ovo je KLJUČNO za Render
-    } : false,
+    // SSL je odvojen od NODE_ENV da bi migracije mogle da se puštaju sa
+    // локалне машине ка удаљеној бази: DB_SSL=true уз обичан ts-node.
+    ssl:
+        process.env.DB_SSL === 'true' || process.env.NODE_ENV === 'production'
+            ? { rejectUnauthorized: false }
+            : false,
     migrationsRun:false,
     logging : false
 });
