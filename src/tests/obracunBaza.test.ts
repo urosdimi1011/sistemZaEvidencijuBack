@@ -4,13 +4,13 @@
  *
  * Ради две ствари:
  *
- *  1) Пореди нови модул `utiles/obracun` са формулама онако како су
- *     раније стајале уписане у рутама, ученик по ученик. Ако се игде
- *     разликују, пресељење рачунице је нешто померило и тест пада.
+ *  1) Показује којим ученицима се приказани дуг мења сада кад исплата
+ *     менаџеру више не улази у дуг ученика — и за колико. Ово је списак
+ *     који треба показати наручиоцу пре него што исправка оде уживо.
  *
  *  2) Тражи ученике на којима рачуница даје бесмислен резултат — NaN,
  *     минус тамо где минуса не сме да буде, менаџер исплаћен преко
- *     провизије, или различит дуг на различитим екранима.
+ *     провизије или преко онога што је ученик уплатио.
  *
  * Не мења ништа у бази, само чита.
  */
@@ -19,7 +19,7 @@ import { Student } from "../entity/Student";
 import {
   obracunUcenika,
   provizijaMenadzera,
-  stanjeUcenika,
+
 } from "../utiles/obracun";
 
 let greske = 0;
@@ -53,14 +53,18 @@ async function main() {
 
   console.log(`\nУчитано ученика: ${studenti.length}\n`);
 
-  // ── 1. Да ли нови модул рачуна исто што и стари код у рутама ────────
-  console.log("=== 1. Пресељена рачуница даје исте бројке ===");
+  // ── 1. Шта се мења пошто су формуле уједначене ──────────────────────
+  console.log("=== 1. Шта се мења у односу на стари обрачун ===");
 
-  let razlika = 0;
-  let prviPrimer = "";
+  const promenjeni: {
+    s: Student;
+    staroSpisak: number;
+    staroUplate: number;
+    novo: number;
+  }[] = [];
 
   for (const s of studenti) {
-    // Формуле преписане ДОСЛОВНО из рута, пре пресељења:
+    // Формуле преписане ДОСЛОВНО из рута, пре исправке:
     const totalPaid = s.payments.reduce(
       (sum, payment) => sum + Number(payment.amount),
       0
@@ -70,38 +74,53 @@ async function main() {
       0
     );
     const totalDebt = Number(s.cenaSkolarine);
-    const preostaliDugStaro = Math.max(0, totalDebt - totalPaid - managerPayouts);
-    const menadzeruStaro =
-      (s.cenaSkolarine as any) * (Number(s.procenatManagera) / 100) -
-      managerPayouts;
 
-    const novo = obracunUcenika(s);
+    // стари списак ученика: дуг − уплаћено − исплаћено
+    const staroSpisak = Math.max(0, totalDebt - totalPaid - managerPayouts);
+    // стари екран уплата: дуг − (уплаћено − исплаћено)
+    const staroUplate = Math.max(0, totalDebt - (totalPaid - managerPayouts));
 
-    const isti =
-      Object.is(novo.uplaceno, totalPaid) &&
-      Object.is(novo.isplacenoMenadzeru, managerPayouts) &&
-      Object.is(novo.ukupanDug, totalDebt) &&
-      Object.is(novo.preostaliDug, preostaliDugStaro) &&
-      // једина свесна разлика: код без процента даје NaN, нови даје 0
-      (Object.is(novo.preostaloMenadzeru, menadzeruStaro) ||
-        (Number.isNaN(menadzeruStaro) && !Number.isNaN(novo.preostaloMenadzeru)));
+    const novo = obracunUcenika(s).preostaliDug;
 
-    if (!isti) {
-      razlika++;
-      if (!prviPrimer) {
-        prviPrimer =
-          `${ime(s)}: стари дуг ${novac(preostaliDugStaro)}, ` +
-          `нови ${novac(novo.preostaliDug)}; ` +
-          `стари менаџеру ${novac(menadzeruStaro)}, ` +
-          `нови ${novac(novo.preostaloMenadzeru)}`;
-      }
+    if (novo !== staroSpisak || novo !== staroUplate) {
+      promenjeni.push({ s, staroSpisak, staroUplate, novo });
+    }
+  }
+
+  if (promenjeni.length === 0) {
+    console.log("  OK   ниједном ученику се приказани дуг не мења");
+  } else {
+    console.log(
+      `  !!   ${promenjeni.length} ученика добија другачији приказан дуг`
+    );
+    const ukupnoPre = promenjeni.reduce((z, p) => z + p.staroSpisak, 0);
+    const ukupnoPosle = promenjeni.reduce((z, p) => z + p.novo, 0);
+    console.log(
+      `       збир дуговања тих ученика: ${novac(ukupnoPre)} -> ${novac(
+        ukupnoPosle
+      )} €`
+    );
+    console.log(
+      `       разлика: ${novac(ukupnoPosle - ukupnoPre)} €`
+    );
+    console.log(
+      "\n       ученик                      списак    уплате      сада"
+    );
+    for (const p of promenjeni.slice(0, 20)) {
+      console.log(
+        `       ${ime(p.s).padEnd(26)} ${novac(p.staroSpisak).padStart(
+          8
+        )} ${novac(p.staroUplate).padStart(9)} ${novac(p.novo).padStart(9)}`
+      );
+    }
+    if (promenjeni.length > 20) {
+      console.log(`       ...још ${promenjeni.length - 20}`);
     }
   }
 
   proveri(
-    `нови модул се поклапа са затеченим кодом на свих ${studenti.length} ученика`,
-    razlika === 0,
-    razlika ? `-> разлика код ${razlika}, нпр. ${prviPrimer}` : ""
+    "нови обрачун не производи NaN ни на једном ученику",
+    studenti.every((s) => !Number.isNaN(obracunUcenika(s).preostaliDug))
   );
 
   // ── 2. Где рачуница даје бесмислен резултат ─────────────────────────
@@ -112,7 +131,6 @@ async function main() {
   const menadzerPrekoProvizije: Student[] = [];
   const menadzerPrekoUplata: Student[] = [];
   const saPreplatom: Student[] = [];
-  const neslaganje: { s: Student; a: number; b: number }[] = [];
   const bezProcentaSaIsplatom: Student[] = [];
 
   for (const s of studenti) {
@@ -139,19 +157,6 @@ async function main() {
       bezProcentaSaIsplatom.push(s);
     }
 
-    const a = stanjeUcenika(
-      o.ukupanDug,
-      o.uplaceno,
-      o.isplacenoMenadzeru,
-      "oduzmi"
-    ).preostaliDug;
-    const b = stanjeUcenika(
-      o.ukupanDug,
-      o.uplaceno,
-      o.isplacenoMenadzeru,
-      "vrati"
-    ).preostaliDug;
-    if (a !== b) neslaganje.push({ s, a, b });
   }
 
   function izvesti(
@@ -220,33 +225,8 @@ async function main() {
     return `преплата ${novac(o.preplata)}`;
   });
 
-  // ── 3. Колико ученика добија различит дуг на различитим екранима ────
-  console.log("\n=== 3. Неслагање између екрана ===");
-
-  if (neslaganje.length === 0) {
-    console.log("  OK   сви ученици имају исти дуг на свим екранима");
-  } else {
-    const ukupnaRazlika = neslaganje.reduce((z, n) => z + (n.b - n.a), 0);
-    console.log(
-      `  !!   ${neslaganje.length} ученика има различит дуг у списку и на екрану уплата`
-    );
-    console.log(
-      `       укупна разлика: ${novac(ukupnaRazlika)} € кроз цео систем`
-    );
-    for (const n of neslaganje.slice(0, 5)) {
-      console.log(
-        `         ${ime(n.s)} — списак каже ${novac(n.a)}, уплате кажу ${novac(
-          n.b
-        )}`
-      );
-    }
-    if (neslaganje.length > 5) {
-      console.log(`         ...још ${neslaganje.length - 5}`);
-    }
-  }
-
-  // ── 4. Збирна провера ───────────────────────────────────────────────
-  console.log("\n=== 4. Збир ===");
+  // ── 3. Збирна провера ───────────────────────────────────────────────
+  console.log("\n=== 3. Збир ===");
 
   let zbirDuga = 0;
   let zbirUplata = 0;

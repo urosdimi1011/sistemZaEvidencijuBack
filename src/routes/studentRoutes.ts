@@ -514,10 +514,8 @@ router.patch("/:id", async (req, res) => {
     await queryRunner.commitTransaction();
 
     if (updatedStudent) {
-      // Literatura se naplaćuje odvojeno i ne ulazi u cenu školovanja.
-      // NAPOMENA: ovde se koristi druga formula nego u spisku učenika —
-      // isplata menadžeru ovde UVEĆAVA dug. Zatečeno stanje, nije menjano.
-      const preostaliDug = obracunUcenika(updatedStudent, "vrati").preostaliDug;
+      // Literatura se naplaćuje odvojeno i ne ulazi u cenu školovanja
+      const preostaliDug = obracunUcenika(updatedStudent).preostaliDug;
 
       const result = {
         id: updatedStudent?.id,

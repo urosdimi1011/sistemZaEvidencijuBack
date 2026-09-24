@@ -78,31 +78,6 @@ export function preostaloMenadzeru(
   return neNegativno ? Math.max(0, razlika) : razlika;
 }
 
-/**
- * Која се формула користи за стање ученика.
- *
- * У систему постоје две и ДАЈУ РАЗЛИЧИТ РЕЗУЛТАТ за истог ученика:
- *
- *  - "oduzmi" → dug − uplaćeno − isplaćenoMenadžeru
- *      Исплата менаџеру УМАЊУЈЕ дуг ученика.
- *      Користи се у: списку ученика, детаљима ученика, приказу након
- *      уписа ученика и приказу након брисања уплате.
- *
- *  - "vrati"  → dug − (uplaćeno − isplaćenoMenadžeru)
- *      Заграда мења знак, па испада dug − uplaćeno + isplaćeno:
- *      исплата менаџеру УВЕЋАВА дуг ученика.
- *      Користи се у: измени ученика и у целом рачуну око уплата
- *      (paymantsRoutes), укључујући проверу колико сме да се уплати.
- *
- * Пример: школарина 400, ученик уплатио 100, менаџеру исплаћено 80.
- *      "oduzmi" каже да ученик дугује 220
- *      "vrati"  каже да ученик дугује 380
- *      стварно стање је 300
- * Разлика је 2 × исплата менаџеру. Формуле овде НИСУ дирано — тестови
- * само бележе затечено стање.
- */
-export type FormulaStanja = "oduzmi" | "vrati";
-
 export interface StanjeUcenika {
   /** Сирово стање — може да буде и негативно (преплата). */
   stanje: number;
@@ -112,16 +87,24 @@ export interface StanjeUcenika {
   preplata: number;
 }
 
-export function stanjeUcenika(
-  dug: number,
-  uplaceno: number,
-  isplacenoMenadzeru: number,
-  formula: FormulaStanja = "oduzmi"
-): StanjeUcenika {
-  const stanje =
-    formula === "oduzmi"
-      ? dug - uplaceno - isplacenoMenadzeru
-      : dug - (uplaceno - isplacenoMenadzeru);
+/**
+ * Стање ученика: колико дугује школи.
+ *
+ *      дуг = школарина − уплаћено
+ *
+ * Исплата менаџеру НАМЕРНО не улази у овај рачун. Провизија је трошак
+ * школе, не дуг ученика — ученик дугује исто без обзира да ли је и
+ * колико менаџеру исплаћено. Колико менаџеру следује рачуна се
+ * одвојено, функцијом `preostaloMenadzeru`.
+ *
+ * Раније су постојале две формуле које су обе увлачиле исплату менаџеру
+ * у дуг ученика, свака са супротним знаком: списак ученика је умањивао
+ * дуг за исплату, а екран уплата га је увећавао. Због тога је исти
+ * ученик имао два различита дуга, а екран уплата је дозвољавао да се
+ * упише тачно толико више колико је менаџеру исплаћено.
+ */
+export function stanjeUcenika(dug: number, uplaceno: number): StanjeUcenika {
+  const stanje = dug - uplaceno;
 
   return {
     stanje,
@@ -136,18 +119,17 @@ export function zaokruziNovac(iznos: number): number {
 }
 
 /**
- * Највећи износ на који сме да се измени постојећа рата.
+ * Највећи износ на који сме да се измени постојећа рата: онолико
+ * колико остаје до дуга кад се одбију остале рате.
  *
- * Полази од тога да збир свих рата, умањен за исплате менаџеру, не сме
- * да пређе дуг — дакле по формули "vrati". Може да испадне негативан
- * ако је ученик већ преплатио преко осталих рата.
+ * Може да испадне негативан ако је ученик већ преплатио кроз остале
+ * рате — тада ниједан позитиван износ није дозвољен.
  */
 export function maksimalnaIzmenaUplate(
   dug: number,
-  isplacenoMenadzeru: number,
   ostaleUplate: number
 ): number {
-  return dug + isplacenoMenadzeru - ostaleUplate;
+  return dug - ostaleUplate;
 }
 
 /** Улаз за пун обрачун једног ученика. */
@@ -176,7 +158,6 @@ export interface ObracunUcenika {
  */
 export function obracunUcenika(
   ucenik: UcenikZaObracun,
-  formula: FormulaStanja = "oduzmi",
   neNegativnoZaMenadzera = false
 ): ObracunUcenika {
   const dug = ukupanDug(ucenik?.cenaSkolarine);
@@ -188,12 +169,7 @@ export function obracunUcenika(
     ucenik?.procenatManagera
   );
 
-  const { preostaliDug, preplata } = stanjeUcenika(
-    dug,
-    uplaceno,
-    isplaceno,
-    formula
-  );
+  const { preostaliDug, preplata } = stanjeUcenika(dug, uplaceno);
 
   return {
     ukupanDug: dug,

@@ -22,6 +22,7 @@
     "test:filters": "ts-node src/tests/filters.test.ts",
     "test:pretraga": "ts-node src/tests/pretragaImena.test.ts",
     "test:obracun": "ts-node src/tests/obracun.test.ts",
+    "test:pristup": "ts-node src/tests/pristupUplatama.test.ts",
     "test:obracun:baza": "ts-node src/tests/obracunBaza.test.ts"
   },
   "keywords": [],

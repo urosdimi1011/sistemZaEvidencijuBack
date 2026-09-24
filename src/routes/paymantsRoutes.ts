@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express'
+import { AuthenticatedRequest } from '../middlewares/authMiddleware'
+import { zabranaPristupaUceniku, samoAdminIliRacunovodja } from '../utiles/pristupUplatama'
 import { AppDataSource } from '../data-source'
 import {Payment} from "../entity/Payment";
 import {Student} from "../entity/Student";
@@ -17,13 +19,15 @@ const paymantRepo = AppDataSource.getRepository(Payment)
 const studentRepo = AppDataSource.getRepository(Student)
 const managerPaymentRepo = AppDataSource.getRepository(ManagerPayment);
 
+// Relacije potrebne da bi se utvrdilo kojoj školi učenik pripada
+const RELACIJE_ZA_OBRACUN = ["payments", "managerPayouts", "occupation.school"];
+
 // Helper funkcija za kalkulaciju.
 // Literatura se naplaćuje odvojeno i ne ulazi u školarinu.
 // Dug se ne prikazuje u minusu nego kao izmireno, a višak kao preplata.
-// NAPOMENA: ovde se koristi formula "vrati" — isplata menadžeru UVEĆAVA
-// dug učenika, suprotno od spiska učenika. Zatečeno stanje, nije menjano.
+// Isplata menadžeru ne utiče na dug učenika — vodi se odvojeno.
 async function calculateStudentBalance(student: Student) {
-    const obracun = obracunUcenika(student, "vrati", true);
+    const obracun = obracunUcenika(student, true);
 
     return {
         totalDebt: zaokruziNovac(obracun.ukupanDug),
@@ -37,7 +41,7 @@ async function calculateStudentBalance(student: Student) {
 }
 
 // POST - Nova uplata učenika
-router.post('/:id', async (_req, res) => {
+router.post('/:id', async (_req: AuthenticatedRequest, res) => {
     try {
         const studentId = parseInt(_req.params.id);
         const iznosZaUplatu = parseFloat(_req.body.iznosZaUplatu);
@@ -67,11 +71,17 @@ router.post('/:id', async (_req, res) => {
         // Učitaj studenta
         const student = await studentRepo.findOne({
             where: {id: studentId},
-            relations: ["payments", "managerPayouts"]
+            relations: RELACIJE_ZA_OBRACUN
         });
 
         if (!student) {
             return res.status(404).json({message: 'Student nije pronađen'});
+        }
+
+        // Nalog škole sme da unese uplatu samo svom učeniku
+        const zabrana = zabranaPristupaUceniku(_req.user, student);
+        if (zabrana) {
+            return res.status(403).json({message: zabrana});
         }
 
         // Kalkulacija pre nove uplate
@@ -99,12 +109,7 @@ router.post('/:id', async (_req, res) => {
         const {
             preostaliDug: newRemainingAmount,
             preplata: novaPreplata,
-        } = stanjeUcenika(
-            balance.totalDebt,
-            newTotalPaid,
-            balance.totalPaidToManager,
-            "vrati"
-        );
+        } = stanjeUcenika(balance.totalDebt, newTotalPaid);
 
         res.status(201).json({
             message: 'Uplata uspešno evidentirana',
@@ -131,13 +136,19 @@ router.post('/:id', async (_req, res) => {
 });
 
 // PATCH - Izmena uplate
-router.patch('/:id', async (_req, res) => {
+router.patch('/:id', async (_req: AuthenticatedRequest, res) => {
     const paymentId = parseInt(_req.params.id);
     const iznosUplate = parseFloat(_req.body.iznosZaUplatu);
     const note = _req.body.note || null;
     const datumUplateString = _req.body.datumUplate;
 
     try {
+        // Izmena već evidentirane uplate nije za naloge škola
+        const zabrana = samoAdminIliRacunovodja(_req.user);
+        if (zabrana) {
+            return res.status(403).json({message: zabrana});
+        }
+
         // Validacija
         if (isNaN(iznosUplate) || iznosUplate <= 0 || !datumUplateString) {
             return res.status(400).json({
@@ -172,23 +183,16 @@ router.patch('/:id', async (_req, res) => {
             "uplate učenika"
         );
 
-        const totalPaidToManager = saberiIznose(
-            student.managerPayouts,
-            "isplate menadžeru"
-        );
-
         // Literatura se naplaćuje odvojeno i ne ulazi u školarinu
         const totalDebt = ukupanDug(student.cenaSkolarine);
 
         const newTotalPaid = totalPaidWithoutCurrent + iznosUplate;
-        
-        const effectiveCovered = newTotalPaid - totalPaidToManager;
-        
-        // Provera da efektivna uplata ne premašuje dug
-        if (effectiveCovered > totalDebt) {
+
+        // Provera da zbir svih rata ne premašuje dug.
+        // Isplate menadžeru se ovde ne mešaju — vode se odvojeno.
+        if (newTotalPaid > totalDebt) {
             const maxNominalAllowed = maksimalnaIzmenaUplate(
                 totalDebt,
-                totalPaidToManager,
                 totalPaidWithoutCurrent
             );
             return res.status(400).json({
@@ -204,9 +208,7 @@ router.patch('/:id', async (_req, res) => {
 
         const { preostaliDug: remainingAmount, preplata } = stanjeUcenika(
             totalDebt,
-            newTotalPaid,
-            totalPaidToManager,
-            "vrati"
+            newTotalPaid
         );
 
         res.status(200).json({
@@ -234,10 +236,16 @@ router.patch('/:id', async (_req, res) => {
 });
 
 // DELETE - Brisanje uplate
-router.delete('/:id', async (_req, res) => {
+router.delete('/:id', async (_req: AuthenticatedRequest, res) => {
     const paymentId = parseInt(_req.params.id);
-    
+
     try {
+        // Brisanje uplate nije za naloge škola
+        const zabrana = samoAdminIliRacunovodja(_req.user);
+        if (zabrana) {
+            return res.status(403).json({message: zabrana});
+        }
+
         const payment = await paymantRepo.findOne({
             where: { id: paymentId },
             relations: ['student', 'student.payments', 'student.managerPayouts']
@@ -260,20 +268,11 @@ router.delete('/:id', async (_req, res) => {
             "uplate učenika"
         );
 
-        const totalPaidToManager = saberiIznose(
-            student.managerPayouts,
-            "isplate menadžeru"
-        );
-
-        // Literatura se naplaćuje odvojeno i ne ulazi u školarinu.
-        // NAPOMENA: ovde se koristi formula "oduzmi", a pri unosu i izmeni
-        // uplate formula "vrati". Zatečeno stanje, nije menjano.
+        // Literatura se naplaćuje odvojeno i ne ulazi u školarinu
         const totalDebt = ukupanDug(student.cenaSkolarine);
         const { preostaliDug: remainingAmount, preplata } = stanjeUcenika(
             totalDebt,
-            totalPaid,
-            totalPaidToManager,
-            "oduzmi"
+            totalPaid
         );
 
         res.status(200).json({
@@ -300,8 +299,14 @@ router.delete('/:id', async (_req, res) => {
 });
 
 // POST - Isplata menadžeru
-router.post('/:idStudenta/isplataMenadzeru', async (req, res) => {
+router.post('/:idStudenta/isplataMenadzeru', async (req: AuthenticatedRequest, res) => {
     try {
+        // Isplate menadžerima nisu u nadležnosti naloga škola
+        const zabrana = samoAdminIliRacunovodja(req.user);
+        if (zabrana) {
+            return res.status(403).json({message: zabrana});
+        }
+
         const studentId = parseInt(req.params.idStudenta);
         let {iznosZaUplatu, desc, datumIsplate} = req.body;
 
