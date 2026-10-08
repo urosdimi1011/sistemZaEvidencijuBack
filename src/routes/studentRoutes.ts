@@ -118,6 +118,9 @@ router.get("/", async (req, res) => {
         literaturePaidAt: m.literaturePaidAt,
         literaturePaid: !!m.literaturePaidAt,
         ukupanDug: obracun.ukupanDug,
+        // Koliko je učenik do sada uplatio — potrebno nalozima škola da
+        // prate naplatu iz samog spiska, bez otvaranja svakog učenika
+        uplaceno: obracun.uplaceno,
         preostaliDug: obracun.preostaliDug,
         preostaliDugZaMenadzera: obracun.preostaloMenadzeru,
         procenatMenadzeru: m.procenatManagera,

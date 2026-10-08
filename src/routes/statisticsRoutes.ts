@@ -12,6 +12,7 @@ import {
   getSchoolYearLabel,
   getSchoolYearMonths,
 } from "../utiles/schoolYear";
+import { napraviGodisnjiIzvestaj } from "../utiles/godisnjiIzvestaj";
 
 const router = Router();
 
@@ -495,109 +496,11 @@ router.get("/godisnji-izvestaj", async (req, res) => {
 
     const { start: od, end: doDatum } = getSchoolYearRange(schoolYearStart);
 
-    // Uplate učenika u periodu, grupisane po školi
-    const uplate = await paymentRepo
-      .createQueryBuilder("p")
-      .leftJoin("p.student", "s")
-      .leftJoin("s.occupation", "o")
-      .leftJoin("o.school", "sc")
-      .select("sc.id", "schoolId")
-      .addSelect("SUM(p.amount)", "iznos")
-      .addSelect("COUNT(p.id)", "broj")
-      .where("p.paidAt BETWEEN :od AND :doDatum", { od, doDatum })
-      .groupBy("sc.id")
-      .getRawMany();
+    const izvestaj = await napraviGodisnjiIzvestaj(
+      { studentRepo, paymentRepo, managerPaymentRepo, schoolRepo },
+      schoolYearStart
+    );
 
-    // Isplate menadžerima u periodu, grupisane po školi učenika
-    const isplate = await managerPaymentRepo
-      .createQueryBuilder("mp")
-      .leftJoin("mp.student", "s")
-      .leftJoin("s.occupation", "o")
-      .leftJoin("o.school", "sc")
-      .select("sc.id", "schoolId")
-      .addSelect("SUM(mp.amount)", "iznos")
-      .addSelect("COUNT(mp.id)", "broj")
-      .where("mp.paidAt BETWEEN :od AND :doDatum", { od, doDatum })
-      .groupBy("sc.id")
-      .getRawMany();
-
-    // Naplaćena literatura u periodu (vodi se odvojeno od školarine)
-    const literatura = await studentRepo
-      .createQueryBuilder("s")
-      .leftJoin("s.occupation", "o")
-      .leftJoin("o.school", "sc")
-      .select("sc.id", "schoolId")
-      .addSelect("SUM(s.literature)", "iznos")
-      .addSelect("COUNT(s.id)", "broj")
-      .where("s.literaturePaidAt BETWEEN :od AND :doDatum", { od, doDatum })
-      .groupBy("sc.id")
-      .getRawMany();
-
-    // Generacija upisana te školske godine: koliko ih je i koliko je zaduženo.
-    // Ovo je vezano za UČENIKE upisane u periodu, za razliku od kolona iznad
-    // koje prate NOVAC koji se kretao u periodu.
-    const upisani = await studentRepo
-      .createQueryBuilder("s")
-      .leftJoin("s.occupation", "o")
-      .leftJoin("o.school", "sc")
-      .select("sc.id", "schoolId")
-      .addSelect("COUNT(s.id)", "broj")
-      .addSelect("SUM(s.cenaSkolarine)", "zaduzeno")
-      .where("s.createdAt BETWEEN :od AND :doDatum", { od, doDatum })
-      .groupBy("sc.id")
-      .getRawMany();
-
-    // Koliko je ta generacija do sada uplatila (bez obzira kada je uplaćeno)
-    const naplacenoOdGeneracije = await paymentRepo
-      .createQueryBuilder("p")
-      .leftJoin("p.student", "s")
-      .leftJoin("s.occupation", "o")
-      .leftJoin("o.school", "sc")
-      .select("sc.id", "schoolId")
-      .addSelect("SUM(p.amount)", "iznos")
-      .where("s.createdAt BETWEEN :od AND :doDatum", { od, doDatum })
-      .groupBy("sc.id")
-      .getRawMany();
-
-    const nadji = (niz: any[], schoolId: number) =>
-      niz.find((r) => Number(r.schoolId) === schoolId);
-
-    const schools = await schoolRepo.find({ order: { name: "ASC" } });
-
-    const redovi = schools.map((school) => {
-      const u = nadji(uplate, school.id);
-      const i = nadji(isplate, school.id);
-      const l = nadji(literatura, school.id);
-      const up = nadji(upisani, school.id);
-      const ng = nadji(naplacenoOdGeneracije, school.id);
-
-      const uplaceno = Number(u?.iznos || 0);
-      const isplaceno = Number(i?.iznos || 0);
-      const zaduzeno = Number(up?.zaduzeno || 0);
-      const naplaceno = Number(ng?.iznos || 0);
-
-      return {
-        schoolId: school.id,
-        schoolName: school.name,
-        brojUpisanih: Number(up?.broj || 0),
-        uplaceno: parseFloat(uplaceno.toFixed(2)),
-        brojUplata: Number(u?.broj || 0),
-        isplacenoMenadzerima: parseFloat(isplaceno.toFixed(2)),
-        brojIsplata: Number(i?.broj || 0),
-        literaturaNaplacena: Number(l?.iznos || 0),
-        brojNaplacenihLiteratura: Number(l?.broj || 0),
-        neto: parseFloat((uplaceno - isplaceno).toFixed(2)),
-        // Podaci o generaciji upisanoj te godine
-        zaduzeno: parseFloat(zaduzeno.toFixed(2)),
-        naplacenoOdGeneracije: parseFloat(naplaceno.toFixed(2)),
-        preostaloZaNaplatu: parseFloat(
-          Math.max(0, zaduzeno - naplaceno).toFixed(2)
-        ),
-      };
-    });
-
-    const zbir = (polje: keyof (typeof redovi)[0]) =>
-      redovi.reduce((suma, r) => suma + Number(r[polje] || 0), 0);
 
     // Školske godine za koje uopšte ima podataka (za padajući izbor)
     const rasponUpisa = await studentRepo
@@ -624,20 +527,10 @@ router.get("/godisnji-izvestaj", async (req, res) => {
       schoolYearStart,
       availableSchoolYears,
       period: { od, do: doDatum },
-      schools: redovi,
-      ukupno: {
-        brojUpisanih: zbir("brojUpisanih"),
-        uplaceno: parseFloat(zbir("uplaceno").toFixed(2)),
-        brojUplata: zbir("brojUplata"),
-        isplacenoMenadzerima: parseFloat(zbir("isplacenoMenadzerima").toFixed(2)),
-        brojIsplata: zbir("brojIsplata"),
-        literaturaNaplacena: zbir("literaturaNaplacena"),
-        brojNaplacenihLiteratura: zbir("brojNaplacenihLiteratura"),
-        neto: parseFloat(zbir("neto").toFixed(2)),
-        zaduzeno: parseFloat(zbir("zaduzeno").toFixed(2)),
-        naplacenoOdGeneracije: parseFloat(zbir("naplacenoOdGeneracije").toFixed(2)),
-        preostaloZaNaplatu: parseFloat(zbir("preostaloZaNaplatu").toFixed(2)),
-      },
+      schools: izvestaj.schools,
+      // Zbirni red je prost zbir kolona iz tabele — gornja kartica i
+      // donja tabela su time po definiciji usklađene.
+      ukupno: izvestaj.ukupno,
     });
   } catch (error) {
     console.error("Greška pri izradi godišnjeg izveštaja:", error);
