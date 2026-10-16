@@ -3,7 +3,8 @@
 import { Router } from "express";
 import { AppDataSource } from "../data-source";
 import { Student } from "../entity/Student";
-import { Between, FindOptionsWhere, ILike, IsNull, Not } from "typeorm";
+import { Between, FindOptionsWhere, ILike, In, IsNull, Not } from "typeorm";
+import { AuthenticatedRequest } from "../middlewares/authMiddleware";
 import { object } from "yup";
 import { Payment } from "../entity/Payment";
 import { ManagerPayment } from "../entity/ManagerPayment";
@@ -17,13 +18,25 @@ import {
   parseSchoolId,
   parseSearch,
   parseDanOpseg,
+  parseRazred,
+  parseSchoolYear,
+  NAJMANJI_RAZRED,
+  NAJVECI_RAZRED,
 } from "../utiles/studentFilters";
 import {
   getSchoolYearForDate,
   getSchoolYearLabel,
   getSchoolYearRange,
 } from "../utiles/schoolYear";
-import { obracunUcenika } from "../utiles/obracun";
+import { obracunUcenika, RELACIJE_ZA_OBRACUN } from "../utiles/obracun";
+import { jeDozvoljenProcenat, PROCENAT_ZA_REDOVNE } from "../utiles/procenti";
+import {
+  razlogPreskakanja,
+  sledeciRazred,
+  napraviNoviUpis,
+  datumUpisaZaGodinu,
+  predlozenaCena,
+} from "../utiles/prebacivanje";
 
 const router = Router();
 const studentiRepo = AppDataSource.getRepository(Student);
@@ -63,6 +76,7 @@ router.get("/", async (req, res) => {
       search: req.query.search,
       date: req.query.date,
       type: req.query.type,
+      razred: req.query.razred,
       schoolId: req.query.schoolId,
       schoolYear: req.query.schoolYear,
       napomena: req.query.napomena,
@@ -78,12 +92,7 @@ router.get("/", async (req, res) => {
     order[finalSortBy] = sortOrder;
     const [studenti, totalCount] = await studentiRepo.findAndCount({
       where: finalWhere,
-      relations: [
-        "menadzer",
-        "payments",
-        "managerPayouts",
-        "occupation.school",
-      ],
+      relations: [...RELACIJE_ZA_OBRACUN, "menadzer", "occupation.school"],
       order: order,
       take: limit,
       skip: offset,
@@ -102,6 +111,7 @@ router.get("/", async (req, res) => {
         datumKreiranja: m?.createdAt,
         type: m?.type,
         entry_type: m?.entry_type,
+        razred: m?.razred,
         note: m?.note,
         noteHandled: !!m?.noteHandledAt,
         noteHandledAt: m?.noteHandledAt,
@@ -249,12 +259,239 @@ router.get("/stats", async (req, res) => {
   }
 });
 
+/**
+ * Pregled pre prebacivanja u sledeći razred.
+ *
+ * Mora da stoji PRE rute "/:id", inače bi Express "prebacivanje"
+ * protumačio kao id učenika.
+ */
+router.get("/prebacivanje/pregled", async (req: AuthenticatedRequest, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      return res.status(403).json({
+        message: "Пребацивање генерације може да изврши само администратор",
+      });
+    }
+
+    const izGodine = parseSchoolYear(req.query.izGodine);
+    if (izGodine === null) {
+      return res.status(400).json({ message: "Нема школске године" });
+    }
+
+    const { start, end } = getSchoolYearRange(izGodine);
+
+    const ucenici = await studentiRepo.find({
+      where: {
+        type: "redovni",
+        createdAt: Between(start, end),
+      },
+      relations: [...RELACIJE_ZA_OBRACUN, "occupation.school", "prethodniUpis"],
+      order: { prezime: "ASC", ime: "ASC" },
+    });
+
+    // Ko je od njih već prebačen — gleda se postoji li upis koji
+    // pokazuje na njega
+    const idUcenika = ucenici.map((u) => u.id);
+    const vecPrebaceni = new Set<number>();
+    if (idUcenika.length > 0) {
+      const naredni = await studentiRepo.find({
+        where: { prethodniUpisId: In(idUcenika) },
+        select: { id: true, prethodniUpisId: true },
+      });
+      naredni.forEach((n) => vecPrebaceni.add(Number(n.prethodniUpisId)));
+    }
+
+    const spremni: any[] = [];
+    const preskoceni: any[] = [];
+
+    for (const u of ucenici) {
+      const zaProveru = {
+        id: u.id,
+        ime: u.ime,
+        prezime: u.prezime ?? "",
+        imeRoditelja: u.imeRoditelja,
+        type: u.type,
+        razred: u.razred,
+        occupationId: u.occupationId,
+        cenaSkolarine: u.cenaSkolarine,
+        vecPrebacen: vecPrebaceni.has(u.id),
+      };
+
+      const razlog = razlogPreskakanja(zaProveru);
+      const obracun = obracunUcenika(u);
+
+      const red = {
+        id: u.id,
+        ime: u.ime,
+        prezime: u.prezime,
+        razred: u.razred,
+        sledeciRazred: u.razred ? sledeciRazred(Number(u.razred)) : null,
+        occupationId: u.occupationId,
+        zanimanje: u.occupation?.name ?? "—",
+        schoolId: u.occupation?.school?.id ?? null,
+        schoolName: u.occupation?.school?.name ?? "Без додељене школе",
+        cenaSkolarine: Number(u.cenaSkolarine),
+        // Dug se prikazuje da administracija vidi ko nije izmirio
+        preostaliDug: obracun.preostaliDug,
+        predlozenaCena: predlozenaCena(
+          u.occupation?.cena,
+          u.cenaSkolarine
+        ),
+      };
+
+      if (razlog) {
+        preskoceni.push({ ...red, razlog });
+      } else {
+        spremni.push(red);
+      }
+    }
+
+    res.json({
+      izGodine,
+      uGodinu: izGodine + 1,
+      spremni,
+      preskoceni,
+      brojSpremnih: spremni.length,
+      brojPreskocenih: preskoceni.length,
+    });
+  } catch (error) {
+    console.error("Greška pri pregledu prebacivanja:", error);
+    res.status(500).json({ message: "Дошло је до грешке при прегледу" });
+  }
+});
+
+/**
+ * Izvršava prebacivanje. Prima spisak učenika i cenu za svakog, jer
+ * administracija cene zadaje po smeru za tu godinu.
+ *
+ * Sve ide u jednoj transakciji: ili prođu svi, ili nijedan. Generacija
+ * prebačena napola bila bi gora od neprebačene.
+ */
+router.post("/prebacivanje", async (req: AuthenticatedRequest, res) => {
+  const queryRunner = AppDataSource.createQueryRunner();
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
+  try {
+    if (req.user?.role !== "admin") {
+      await queryRunner.rollbackTransaction();
+      return res.status(403).json({
+        message: "Пребацивање генерације може да изврши само администратор",
+      });
+    }
+
+    const uGodinu = parseSchoolYear(req.body?.uGodinu);
+    if (uGodinu === null) {
+      await queryRunner.rollbackTransaction();
+      return res.status(400).json({ message: "Нема циљне школске године" });
+    }
+
+    const stavke = Array.isArray(req.body?.ucenici) ? req.body.ucenici : null;
+    if (!stavke || stavke.length === 0) {
+      await queryRunner.rollbackTransaction();
+      return res
+        .status(400)
+        .json({ message: "Није изабран ниједан ученик за пребацивање" });
+    }
+
+    const datumUpisa = datumUpisaZaGodinu(uGodinu);
+    const napravljeni: number[] = [];
+    const odbijeni: { id: number; razlog: string }[] = [];
+
+    for (const stavka of stavke) {
+      const id = Number(stavka?.id);
+      const cena = Number(stavka?.cena);
+
+      if (!Number.isInteger(id) || id <= 0) {
+        odbijeni.push({ id, razlog: "неисправан ученик" });
+        continue;
+      }
+      if (!Number.isFinite(cena) || cena <= 0) {
+        odbijeni.push({ id, razlog: "неисправна цена" });
+        continue;
+      }
+
+      const ucenik = await queryRunner.manager.findOne(Student, {
+        where: { id },
+      });
+      if (!ucenik) {
+        odbijeni.push({ id, razlog: "ученик не постоји" });
+        continue;
+      }
+
+      // Ponovna provera na serveru — spisak je mogao da zastari dok je
+      // administracija gledala pregled
+      const vecPrebacen = await queryRunner.manager.findOne(Student, {
+        where: { prethodniUpisId: id },
+        select: { id: true },
+      });
+
+      const razlog = razlogPreskakanja({
+        id: ucenik.id,
+        ime: ucenik.ime,
+        prezime: ucenik.prezime ?? "",
+        type: ucenik.type,
+        razred: ucenik.razred,
+        occupationId: ucenik.occupationId,
+        vecPrebacen: !!vecPrebacen,
+      });
+
+      if (razlog) {
+        odbijeni.push({ id, razlog });
+        continue;
+      }
+
+      const noviPodaci = napraviNoviUpis(
+        {
+          id: ucenik.id,
+          ime: ucenik.ime,
+          prezime: ucenik.prezime ?? "",
+          imeRoditelja: ucenik.imeRoditelja,
+          type: ucenik.type,
+          razred: ucenik.razred,
+          occupationId: ucenik.occupationId,
+        },
+        cena,
+        datumUpisa
+      );
+
+      const novi = queryRunner.manager.create(Student, noviPodaci as any);
+      const sacuvan = await queryRunner.manager.save(novi);
+      napravljeni.push((sacuvan as any).id);
+    }
+
+    if (napravljeni.length === 0) {
+      await queryRunner.rollbackTransaction();
+      return res.status(400).json({
+        message: "Ниједан ученик није пребачен",
+        odbijeni,
+      });
+    }
+
+    await queryRunner.commitTransaction();
+
+    res.status(201).json({
+      message: `Пребачено ${napravljeni.length} ученика у школску ${getSchoolYearLabel(
+        uGodinu
+      )}`,
+      brojPrebacenih: napravljeni.length,
+      odbijeni,
+    });
+  } catch (error) {
+    await queryRunner.rollbackTransaction();
+    console.error("Greška pri prebacivanju generacije:", error);
+    res.status(500).json({ message: "Дошло је до грешке при пребацивању" });
+  } finally {
+    await queryRunner.release();
+  }
+});
+
 router.get("/:id", async (req, res) => {
   try {
     const studentId = parseInt(req.params.id);
     const student = await studentiRepo.findOne({
       where: { id: studentId },
-      relations: ["payments", "managerPayouts", "occupation.school"],
+      relations: [...RELACIJE_ZA_OBRACUN, "occupation.school"],
     });
     if (!student) {
       return res.status(404).json({ message: "Student nije pronađen" });
@@ -283,6 +520,7 @@ router.get("/:id", async (req, res) => {
         ukupnoMenadzeru: commissionAmount,
         type: student?.type,
         entry_type: student?.entry_type,
+        razred: student?.razred,
         note: student?.note,
         noteHandled: !!student?.noteHandledAt,
         noteHandledAt: student?.noteHandledAt,
@@ -314,46 +552,86 @@ router.get("/:id", async (req, res) => {
 
 // Administracija škole (school_manager) ne sme sama da određuje procenat —
 // dozvoljeno je 0% ili tačno onoliko koliko iznosi procenat izabranog menadžera
+/**
+ * Razred (1-4) vode samo redovni učenici — i kad kreću u prvi, i kad
+ * pređu iz druge škole u bilo koji razred. Vanredni umesto toga imaju
+ * tip upisa, pa im razred ostaje prazan.
+ *
+ * Vraća poruku o grešci ili null ako je unos ispravan.
+ */
+function proveriRazred(tip: unknown, razred: unknown): string | null {
+  if (tip !== "redovni") return null;
+
+  const broj = parseRazred(razred);
+  if (broj === null) {
+    return `Разред је обавезан за редовне ученике и мора бити између ${NAJMANJI_RAZRED} и ${NAJVECI_RAZRED}`;
+  }
+  return null;
+}
+
+/** Razred koji se zaista upisuje: broj kod redovnih, prazno kod ostalih. */
+function razredZaUpis(tip: unknown, razred: unknown): number | null {
+  return tip === "redovni" ? parseRazred(razred) : null;
+}
+
+/**
+ * Pravila su u utiles/procenti, da bi mogla da se testiraju bez baze.
+ * Ovde se samo dohvata procenat izabranog menadžera.
+ */
 async function isValidPercentForSchoolManager(
   req: any,
   procenat: any,
-  managerId: any
+  managerId: any,
+  tipUcenika?: unknown
 ): Promise<boolean> {
-  if (req.user?.role !== "school_manager") return true;
-  if (procenat === null || procenat === undefined || procenat === "") return true;
+  const imaMenadzera = !!managerId;
 
-  const unetiProcenat = Number(procenat);
-  if (unetiProcenat === 0) return true;
-  if (!managerId) return false;
+  // Procenat menadžera treba samo kod vanrednih — kod redovnih je fiksan
+  let procenatMenadzera: number | null = null;
+  if (imaMenadzera && tipUcenika !== "redovni") {
+    const menadzer = await AppDataSource.getRepository(Menadzer).findOne({
+      where: { id: Number(managerId) },
+    });
+    procenatMenadzera = menadzer ? menadzer.procenat : null;
+  }
 
-  const menadzer = await AppDataSource.getRepository(Menadzer).findOne({
-    where: { id: Number(managerId) },
+  return jeDozvoljenProcenat({
+    uloga: req.user?.role,
+    tipUcenika,
+    procenat,
+    imaMenadzera,
+    procenatMenadzera,
   });
-
-  return !!menadzer && unetiProcenat === menadzer.procenat;
 }
 
 router.post("/", async (req, res) => {
   try {
+    // Nalog vezan za vrstu upisa ne bira tip — nameće mu se prema nalogu.
+    // Mora se odrediti PRE provere procenta, jer pravilo za redovne
+    // (fiksnih 10%) zavisi upravo od vrste upisa.
+    const tipUpisaNaloga = tipUpisaZaNalog((req as any).user);
+    const tipUcenika = tipUpisaNaloga ?? req.body?.type;
+
     const dozvoljenProcenat = await isValidPercentForSchoolManager(
       req,
       req.body?.procenatManagera,
-      req.body?.managerId
+      req.body?.managerId,
+      tipUcenika
     );
     if (!dozvoljenProcenat) {
       return res.status(400).json({
         error: {
           detail:
-            "Procenat mora biti 0% ili procenat koji je određen za izabranog menadžera",
+            tipUcenika === "redovni"
+              ? `Procenat kod redovnih učenika može biti 0% ili ${PROCENAT_ZA_REDOVNE}%`
+              : "Procenat mora biti 0% ili procenat koji je određen za izabranog menadžera",
         },
       });
     }
 
     const dataForSend: any = object(req.body).fields;
 
-    // Nalog vezan za vrstu upisa ne bira tip — nameće mu se prema nalogu.
     // Redovni učenici nemaju tip upisa ni literaturu.
-    const tipUpisaNaloga = tipUpisaZaNalog((req as any).user);
     if (tipUpisaNaloga) {
       dataForSend.type = tipUpisaNaloga;
     }
@@ -361,6 +639,13 @@ router.post("/", async (req, res) => {
       dataForSend.entry_type = null;
       dataForSend.literature = null;
     }
+
+    // Razred je obavezan kod redovnih, a kod vanrednih se ne vodi
+    const greskaRazreda = proveriRazred(dataForSend.type, dataForSend.razred);
+    if (greskaRazreda) {
+      return res.status(400).json({ error: { detail: greskaRazreda } });
+    }
+    dataForSend.razred = razredZaUpis(dataForSend.type, dataForSend.razred);
 
     const datum = dataForSend.createdAt as unknown as string;
     const podaciZaUpis = {
@@ -372,7 +657,7 @@ router.post("/", async (req, res) => {
     const sacuvan = await studentiRepo.save(novi);
     let studentSaMenadzerom = await studentiRepo.findOne({
       where: { id: sacuvan.id },
-      relations: ["menadzer", "payments", "managerPayouts", "occupation.school"],
+      relations: [...RELACIJE_ZA_OBRACUN, "menadzer", "occupation.school"],
     });
 
     if (!studentSaMenadzerom) {
@@ -423,21 +708,6 @@ router.patch("/:id", async (req, res) => {
     const studentId = parseInt(req.params.id);
     const dataForSend = req.body;
 
-    const dozvoljenProcenat = await isValidPercentForSchoolManager(
-      req,
-      dataForSend?.procenatManagera,
-      dataForSend?.managerId
-    );
-    if (!dozvoljenProcenat) {
-      await queryRunner.rollbackTransaction();
-      return res.status(400).json({
-        error: {
-          detail:
-            "Procenat mora biti 0% ili procenat koji je određen za izabranog menadžera",
-        },
-      });
-    }
-
     const currentStudent = await queryRunner.manager.findOne(Student, {
       where: { id: studentId },
       relations: ["managerPayouts"],
@@ -446,6 +716,31 @@ router.patch("/:id", async (req, res) => {
     if (!currentStudent) {
       await queryRunner.rollbackTransaction();
       return res.status(404).json({ error: "Student nije pronađen" });
+    }
+
+    // Vrsta upisa se mora znati pre provere procenta — kod redovnih važi
+    // fiksnih 10%. Ako izmena ne dira tip, uzima se zatečeni.
+    const tipUcenikaZaProveru =
+      tipUpisaZaNalog((req as any).user) ??
+      dataForSend?.type ??
+      currentStudent.type;
+
+    const dozvoljenProcenat = await isValidPercentForSchoolManager(
+      req,
+      dataForSend?.procenatManagera,
+      dataForSend?.managerId ?? currentStudent.managerId,
+      tipUcenikaZaProveru
+    );
+    if (!dozvoljenProcenat) {
+      await queryRunner.rollbackTransaction();
+      return res.status(400).json({
+        error: {
+          detail:
+            tipUcenikaZaProveru === "redovni"
+              ? `Procenat kod redovnih učenika može biti 0% ili ${PROCENAT_ZA_REDOVNE}%`
+              : "Procenat mora biti 0% ili procenat koji je određen za izabranog menadžera",
+        },
+      });
     }
 
     const managerChanging =
@@ -507,11 +802,31 @@ router.patch("/:id", async (req, res) => {
       dataForSend.literature = null;
     }
 
+    // Razred je obavezan kod redovnih, a kod vanrednih se ne vodi.
+    // Proverava se samo kad je polje uopšte poslato, da izmena jednog
+    // drugog podatka ne bi pala zbog razreda koji nije ni diran.
+    if (dataForSend.type === "redovni" || dataForSend.razred !== undefined) {
+      const tipZaProveru = dataForSend.type ?? currentStudent.type;
+      const greskaRazreda = proveriRazred(
+        tipZaProveru,
+        dataForSend.razred ?? currentStudent.razred
+      );
+      if (greskaRazreda) {
+        await queryRunner.rollbackTransaction();
+        await queryRunner.release();
+        return res.status(400).json({ error: { detail: greskaRazreda } });
+      }
+      dataForSend.razred = razredZaUpis(
+        tipZaProveru,
+        dataForSend.razred ?? currentStudent.razred
+      );
+    }
+
     await queryRunner.manager.update(Student, studentId, dataForSend);
 
     const updatedStudent = await queryRunner.manager.findOne(Student, {
       where: { id: studentId },
-      relations: ["menadzer", "payments", "occupation.school", "managerPayouts"],
+      relations: [...RELACIJE_ZA_OBRACUN, "menadzer", "occupation.school"],
     });
 
     await queryRunner.commitTransaction();

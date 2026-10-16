@@ -89,6 +89,24 @@ export function parseSchoolYear(value: unknown): number | null {
     : null;
 }
 
+/** Najniži i najviši razred srednje škole. */
+export const NAJMANJI_RAZRED = 1;
+export const NAJVECI_RAZRED = 4;
+
+/**
+ * Razred 1–4, ili null ako vrednost nije upotrebljiva.
+ * Null znači "svi razredi" — uslov se tada uopšte ne dodaje u upit.
+ */
+export function parseRazred(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const broj = Number(String(value).trim());
+  return Number.isInteger(broj) &&
+    broj >= NAJMANJI_RAZRED &&
+    broj <= NAJVECI_RAZRED
+    ? broj
+    : null;
+}
+
 /** Pretraga se skraćuje — vrlo dugačak unos pravi ogroman OR upit. */
 export function parseSearch(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -99,6 +117,7 @@ export interface StudentFilterParams {
   search?: unknown;
   date?: unknown;
   type?: unknown;
+  razred?: unknown;
   schoolId?: unknown;
   schoolYear?: unknown;
   napomena?: unknown;
@@ -141,6 +160,15 @@ export function buildStudentWhere(
     baseWhere.type = IsNull();
   } else if (DOZVOLJENI_TIPOVI.includes(tip)) {
     baseWhere.type = tip as "redovni" | "vandredni";
+  }
+
+  // Razred imaju samo redovni učenici. Kad se gledaju vanredni ili svi,
+  // filter po razredu nema smisla i namerno se preskače — inače bi
+  // zaostala vrednost iz URL-a tiho ispraznila spisak.
+  const gledaSamoRedovne = baseWhere.type === "redovni";
+  const razred = gledaSamoRedovne ? parseRazred(params.razred) : null;
+  if (razred !== null) {
+    baseWhere.razred = razred;
   }
 
   // Filter po napomeni je samo za administratora

@@ -11,6 +11,16 @@
  * тест `npm run test:obracun`.
  */
 
+/**
+ * Релације без којих `obracunUcenika` не може да ради.
+ *
+ * Стоје овде, уз рачуницу која их тражи, да се не би заборавиле при
+ * писању нове руте. Користи се овако:
+ *
+ *     relations: [...RELACIJE_ZA_OBRACUN, "occupation.school"]
+ */
+export const RELACIJE_ZA_OBRACUN = ["payments", "managerPayouts"] as const;
+
 /** Ставка са новчаним износом — уплата ученика или исплата менаџеру. */
 export interface NovcanaStavka {
   amount?: number | string | null;

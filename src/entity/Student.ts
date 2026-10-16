@@ -80,6 +80,24 @@ export class Student {
     })
     entry_type!: 'prekvalifikacija' | 'dokvalifikacija' | 'vanredni';
 
+    // Razred (1-4) — samo za redovne učenike. Vanredni umesto toga imaju
+    // entry_type, pa im ovo ostaje prazno.
+    @Column('int', {
+        nullable: true,
+        default: null
+    })
+    razred!: number | null;
+
+    // Upis iz prethodne školske godine, kad je ovaj zapis nastao
+    // prebacivanjem u sledeći razred. NULL znači prvi upis u našu školu.
+    // Menadžer ide samo uz prvi upis, pa je ovo i provera za 10%.
+    @ManyToOne(() => Student, { nullable: true, onDelete: 'SET NULL' })
+    @JoinColumn({ name: 'prethodniUpisId' })
+    prethodniUpis!: Student | null;
+
+    @Column('int', { nullable: true, default: null })
+    prethodniUpisId!: number | null;
+
 
     @OneToMany(() => Payment, (payment) => payment.student)
     payments!: Payment[];

@@ -24,6 +24,12 @@ export class Occupation {
     @Column({ default: false })
     zaRedovne!: boolean;
 
+    // Podrazumevana cena školarine za ovaj smer. Služi samo da se polje
+    // pri upisu učenika samo popuni — administracija je po potrebi menja
+    // za pojedinačnog učenika. NULL znači da cena još nije određena.
+    @Column('decimal', { precision: 10, scale: 2, nullable: true, default: null })
+    cena!: number | null;
+
     @ManyToOne(() => School, (mgr) => mgr.occupations, { nullable: false })
     school!: School;
 

@@ -66,51 +66,99 @@ export function getDetailedStats(students: any[], range: string, year: string): 
     return stats;
 }
 
-// Mesečna statistika za jednu ŠKOLSKU godinu (septembar -> avgust)
-export function getMonthlyStatsForYear(students: any[], schoolYearStart: number): { [monthKey: string]: number } {
-    const monthlyStats: { [monthKey: string]: number } = {};
+/**
+ * Jedna stavka statistike — koliko je učenika upisano u tom periodu i
+ * koliki prihod donose.
+ *
+ * "Prihod" je zbir ŠKOLARINA tih učenika, dakle koliko su zaduženi, a ne
+ * koliko je naplaćeno. Ista definicija se koristi i za "Укупан приход",
+ * pa zbir stavki uvek daje ukupan iznos.
+ */
+export interface StavkaStatistike {
+    brojUcenika: number;
+    prihod: number;
+}
 
-    // Inicijalizuj sve mesece školske godine sa 0 (redom od septembra)
+function prazna(): StavkaStatistike {
+    return { brojUcenika: 0, prihod: 0 };
+}
+
+/** Dodaje jednog učenika u stavku pod datim ključem. */
+function dodaj(
+    mapa: { [kljuc: string]: StavkaStatistike },
+    kljuc: string,
+    student: any
+): void {
+    if (!mapa[kljuc]) mapa[kljuc] = prazna();
+    mapa[kljuc].brojUcenika += 1;
+    mapa[kljuc].prihod += Number(student.cenaSkolarine) || 0;
+}
+
+/** Zaokružuje prihode na dve decimale, zbog sabiranja decimalnih iznosa. */
+function zaokruzi(mapa: { [kljuc: string]: StavkaStatistike }) {
+    for (const kljuc of Object.keys(mapa)) {
+        mapa[kljuc].prihod = parseFloat(mapa[kljuc].prihod.toFixed(2));
+    }
+    return mapa;
+}
+
+/** Ključ meseca u obliku "2025-09". */
+function kljucMeseca(datum: Date): string {
+    return `${datum.getFullYear()}-${(datum.getMonth() + 1)
+        .toString()
+        .padStart(2, '0')}`;
+}
+
+// Mesečna statistika za jednu ŠKOLSKU godinu (septembar -> avgust)
+export function getMonthlyStatsForYear(
+    students: any[],
+    schoolYearStart: number
+): { [monthKey: string]: StavkaStatistike } {
+    const monthlyStats: { [monthKey: string]: StavkaStatistike } = {};
+
+    // Inicijalizuj sve mesece školske godine sa nulom (redom od septembra)
     for (const { month, year } of getSchoolYearMonths(schoolYearStart)) {
-        const monthKey = `${year}-${month.toString().padStart(2, '0')}`;
-        monthlyStats[monthKey] = 0;
+        monthlyStats[`${year}-${month.toString().padStart(2, '0')}`] = prazna();
     }
 
     // Popuni stvarnim podacima
     students.forEach(student => {
         const date = new Date(student.createdAt);
         if (getSchoolYearForDate(date) === schoolYearStart) {
-            const monthKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
-            monthlyStats[monthKey] = (monthlyStats[monthKey] || 0) + 1;
+            dodaj(monthlyStats, kljucMeseca(date), student);
         }
     });
 
-    return monthlyStats;
+    return zaokruzi(monthlyStats);
 }
 
-// Statistika po ŠKOLSKIM godinama, npr. { "2025/2026": 15 }
-export function getYearlyStats(students: any[]): { [year: string]: number } {
-    const yearlyStats: { [year: string]: number } = {};
+// Statistika po ŠKOLSKIM godinama, npr. { "2025/2026": { brojUcenika: 15, prihod: 22500 } }
+export function getYearlyStats(students: any[]): {
+    [year: string]: StavkaStatistike;
+} {
+    const yearlyStats: { [year: string]: StavkaStatistike } = {};
 
     students.forEach(student => {
-        const label = getSchoolYearLabel(getSchoolYearForDate(new Date(student.createdAt)));
-        yearlyStats[label] = (yearlyStats[label] || 0) + 1;
+        const label = getSchoolYearLabel(
+            getSchoolYearForDate(new Date(student.createdAt))
+        );
+        dodaj(yearlyStats, label, student);
     });
 
-    return yearlyStats;
+    return zaokruzi(yearlyStats);
 }
 
 // Funkcija za mesečnu statistiku
-export function getMonthlyStats(students: any[]): { [monthKey: string]: number } {
-    const monthlyStats: { [monthKey: string]: number } = {};
+export function getMonthlyStats(students: any[]): {
+    [monthKey: string]: StavkaStatistike;
+} {
+    const monthlyStats: { [monthKey: string]: StavkaStatistike } = {};
 
     students.forEach(student => {
-        const date = new Date(student.createdAt);
-        const monthKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
-        monthlyStats[monthKey] = (monthlyStats[monthKey] || 0) + 1;
+        dodaj(monthlyStats, kljucMeseca(new Date(student.createdAt)), student);
     });
 
-    return monthlyStats;
+    return zaokruzi(monthlyStats);
 }
 
 // Dostupne ŠKOLSKE godine (vraća početne godine, npr. [2025, 2024])

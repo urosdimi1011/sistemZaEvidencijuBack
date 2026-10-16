@@ -16,6 +16,7 @@ import {
     parseSchoolId,
     parseDanOpseg,
     parseSearch,
+    parseRazred,
 } from "../utiles/studentFilters";
 
 let greske = 0;
@@ -159,6 +160,80 @@ async function main() {
         "филтер по напомени не важи за налог школе",
         gdeNeadmin?.note === undefined
     );
+
+    console.log("\n=== Разред (само редовни ученици) ===");
+
+    proveri("разред 1 пролази", parseRazred("1") === 1);
+    proveri("разред 4 пролази", parseRazred(4) === 4);
+    proveri("разред 0 се одбацује", parseRazred("0") === null);
+    proveri("разред 5 се одбацује", parseRazred("5") === null);
+    proveri("разред -2 се одбацује", parseRazred("-2") === null);
+    proveri("разред 2.5 се одбацује", parseRazred("2.5") === null);
+    proveri("'други' се одбацује", parseRazred("други") === null);
+    proveri("празно значи сви разреди", parseRazred("") === null);
+    proveri("недостајућа вредност значи сви", parseRazred(undefined) === null);
+    proveri(
+        "покушај убацивања SQL-а се одбацује",
+        parseRazred("1 OR 1=1") === null
+    );
+
+    const gdeRedovniRazred = buildStudentWhere({
+        type: "redovni",
+        razred: "2",
+    }) as any;
+    proveri(
+        "редовни + разред 2 даје услов по разреду",
+        gdeRedovniRazred?.razred === 2,
+        `-> добијено ${gdeRedovniRazred?.razred}`
+    );
+
+    // Разред имају само редовни — иначе би заостала вредност из URL-а
+    // тихо испразнила списак ванредних
+    const gdeVanredniRazred = buildStudentWhere({
+        type: "vandredni",
+        razred: "2",
+    }) as any;
+    proveri(
+        "ванредни + разред -> разред се игнорише",
+        gdeVanredniRazred?.razred === undefined,
+        `-> добијено ${gdeVanredniRazred?.razred}`
+    );
+
+    const gdeSviRazred = buildStudentWhere({ razred: "2" }) as any;
+    proveri(
+        "без изабраног типа -> разред се игнорише",
+        gdeSviRazred?.razred === undefined,
+        `-> добијено ${gdeSviRazred?.razred}`
+    );
+
+    const gdeNalogRedovni = buildStudentWhere({
+        razred: "3",
+        user: { role: "school_manager", schoolId: 1, tipUpisa: "redovni" },
+    }) as any;
+    proveri(
+        "налог за редовне сме да филтрира по разреду",
+        gdeNalogRedovni?.razred === 3,
+        `-> добијено ${gdeNalogRedovni?.razred}`
+    );
+
+    const gdeNalogVanredni = buildStudentWhere({
+        razred: "3",
+        user: { role: "school_manager", schoolId: 1, tipUpisa: "vandredni" },
+    }) as any;
+    proveri(
+        "налогу за ванредне разред се игнорише",
+        gdeNalogVanredni?.razred === undefined,
+        `-> добијено ${gdeNalogVanredni?.razred}`
+    );
+
+    await upitNePuca("упит са разредом не пуца", {
+        type: "redovni",
+        razred: "2",
+    });
+    await upitNePuca("упит са неисправним разредом не пуца", {
+        type: "redovni",
+        razred: "abc",
+    });
 
     console.log(
         greske === 0

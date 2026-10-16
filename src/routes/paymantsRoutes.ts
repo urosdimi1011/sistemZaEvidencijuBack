@@ -8,6 +8,7 @@ import {ManagerPayment} from "../entity/ManagerPayment";
 import {
     maksimalnaIzmenaUplate,
     obracunUcenika,
+    RELACIJE_ZA_OBRACUN,
     saberiIznose,
     stanjeUcenika,
     ukupanDug,
@@ -19,8 +20,8 @@ const paymantRepo = AppDataSource.getRepository(Payment)
 const studentRepo = AppDataSource.getRepository(Student)
 const managerPaymentRepo = AppDataSource.getRepository(ManagerPayment);
 
-// Relacije potrebne da bi se utvrdilo kojoj školi učenik pripada
-const RELACIJE_ZA_OBRACUN = ["payments", "managerPayouts", "occupation.school"];
+// Uz obračun treba i škola, da bi se utvrdilo kojem nalogu učenik pripada
+const RELACIJE_ZA_UPLATE = [...RELACIJE_ZA_OBRACUN, "occupation.school"];
 
 // Helper funkcija za kalkulaciju.
 // Literatura se naplaćuje odvojeno i ne ulazi u školarinu.
@@ -71,7 +72,7 @@ router.post('/:id', async (_req: AuthenticatedRequest, res) => {
         // Učitaj studenta
         const student = await studentRepo.findOne({
             where: {id: studentId},
-            relations: RELACIJE_ZA_OBRACUN
+            relations: RELACIJE_ZA_UPLATE
         });
 
         if (!student) {
