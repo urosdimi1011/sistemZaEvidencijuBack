@@ -13,6 +13,7 @@ import {
   getSchoolYearMonths,
 } from "../utiles/schoolYear";
 import { napraviGodisnjiIzvestaj } from "../utiles/godisnjiIzvestaj";
+import { poredjaniSmerovi } from "../utiles/redosledSmerova";
 
 const router = Router();
 
@@ -102,7 +103,7 @@ router.get("/monthly-enrollment", async (req, res) => {
       }
 
       schoolData.monthlyStats = monthlyStats;
-      schoolData.occupations = school.occupations.map((occ) => ({
+      schoolData.occupations = poredjaniSmerovi(school.occupations).map((occ) => ({
         id: occ.id,
         name: occ.name,
       }));
@@ -173,7 +174,7 @@ router.get("/monthly-enrollment-aggregated", async (req, res) => {
       }
 
       schoolData.months = monthlyData;
-      schoolData.occupations = school.occupations.map((occ) => ({
+      schoolData.occupations = poredjaniSmerovi(school.occupations).map((occ) => ({
         id: occ.id,
         name: occ.name,
         totalStudentsPerYear: occ.students.filter((occ2) => {

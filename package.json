@@ -28,7 +28,9 @@
     "test:statistika": "ts-node src/tests/statistikaMenadzera.test.ts",
     "test:procenti": "ts-node src/tests/procenti.test.ts",
     "test:prebacivanje": "ts-node src/tests/prebacivanje.test.ts",
-    "test:rate": "ts-node src/tests/rateMenadzera.test.ts"
+    "test:rate": "ts-node src/tests/rateMenadzera.test.ts",
+    "test:ponuda": "ts-node src/tests/ponudaZaUpis.test.ts",
+    "test:redosled": "ts-node src/tests/redosledSmerova.test.ts"
   },
   "keywords": [],
   "author": "",

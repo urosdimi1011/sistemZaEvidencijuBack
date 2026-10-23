@@ -6,6 +6,8 @@ import {ManagerPayment} from "../entity/ManagerPayment";
 import {Occupation} from "../entity/Occupation";
 import {School} from "../entity/School";
 import {StudentService} from "../services/student.service";
+import { ponudaZaUpis, nazivSaOznakom } from "../utiles/ponudaZaUpis";
+import { poredjaniSmerovi } from "../utiles/redosledSmerova";
 const router = Router()
 const schoolRepo = AppDataSource.getRepository(School)
 
@@ -13,17 +15,29 @@ router.get('/', async (_req, res) => {
     const schools = await schoolRepo.find({
         relations: ['occupations'],
     });
+    // Ručno određen redosled smerova — isti svuda gde se nabrajaju
+    for (const skola of schools) {
+        skola.occupations = poredjaniSmerovi(skola.occupations);
+    }
     res.json(schools);
 });
 
+/**
+ * Škole za izbor pri upisu učenika.
+ *
+ * Ugašene se ne nude. Izuzetak je škola koja je već izabrana kod
+ * učenika koji se menja (`zadrzi`) — bez toga bi se kod izmene starog
+ * učenika polje ispraznilo i ne bi mogao da se sačuva bez promene škole.
+ */
 router.get('/all', async (_req, res) => {
-    const schools = await schoolRepo.find();
+    const zadrzi = Number(_req.query.zadrzi);
 
-    const skole = schools.map(m => ({
+    const schools = await schoolRepo.find({ order: { name: 'ASC' } });
+
+    const skole = ponudaZaUpis(schools, zadrzi).map(m => ({
         value: m.id,
-        label: `${m.name}`
+        label: nazivSaOznakom(m, 'угашена'),
     }));
-
 
     res.json(skole);
 });
@@ -52,6 +66,15 @@ router.get('/:id/occupations', async (_req, res) => {
         schools.occupations = schools.occupations.filter((o) => o.zaRedovne);
     }
 
+    // Ugašeni smerovi se ne nude pri upisu. Izuzetak je smer koji je
+    // već izabran kod učenika koji se menja — inače bi se kod izmene
+    // starog učenika polje ispraznilo i morao bi da mu se menja smer.
+    // Redosled je ručno određen po školi — isti svuda gde se smerovi
+    // nabrajaju, da se poredak ne razlikuje od ekrana do ekrana
+    schools.occupations = poredjaniSmerovi(
+        ponudaZaUpis(schools.occupations, Number(_req.query.zadrzi))
+    );
+
     res.json(schools);
 });
 
@@ -60,7 +83,7 @@ router.get('/occupations', async (req: Request, res: Response) => {
     try {
         const {schoolId} = req.query;
         const occupations = await studentService.getOccupationsForSchool(Number(schoolId));
-        res.json(occupations);
+        res.json(poredjaniSmerovi(occupations));
     } catch (error : any) {
         res.status(500).json({ message: error.message });
     }

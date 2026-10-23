@@ -30,6 +30,16 @@ export class Occupation {
     @Column('decimal', { precision: 10, scale: 2, nullable: true, default: null })
     cena!: number | null;
 
+    // Ugašen smer se više NE NUDI pri upisu novog učenika, ali učenici
+    // koji su na njemu upisani i dalje ga imaju i vide svuda.
+    @Column({ default: true })
+    aktivan!: boolean;
+
+    // Ručno određen redosled u okviru škole. Manji broj ide napred.
+    // Nula znači "neodređeno" — takvi padaju na kraj, po nazivu.
+    @Column({ default: 0 })
+    redosled!: number;
+
     @ManyToOne(() => School, (mgr) => mgr.occupations, { nullable: false })
     school!: School;
 
