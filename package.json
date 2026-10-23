@@ -27,7 +27,8 @@
     "test:obracun:baza": "ts-node src/tests/obracunBaza.test.ts",
     "test:statistika": "ts-node src/tests/statistikaMenadzera.test.ts",
     "test:procenti": "ts-node src/tests/procenti.test.ts",
-    "test:prebacivanje": "ts-node src/tests/prebacivanje.test.ts"
+    "test:prebacivanje": "ts-node src/tests/prebacivanje.test.ts",
+    "test:rate": "ts-node src/tests/rateMenadzera.test.ts"
   },
   "keywords": [],
   "author": "",

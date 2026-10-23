@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express'
 import { AuthenticatedRequest } from '../middlewares/authMiddleware'
+import { rateZaUcenika } from '../utiles/rateMenadzera'
 import { zabranaPristupaUceniku, samoAdminIliRacunovodja } from '../utiles/pristupUplatama'
 import { AppDataSource } from '../data-source'
 import {Payment} from "../entity/Payment";
 import {Student} from "../entity/Student";
 import {ManagerPayment} from "../entity/ManagerPayment";
 import {
-    maksimalnaIzmenaUplate,
     obracunUcenika,
     RELACIJE_ZA_OBRACUN,
     saberiIznose,
@@ -88,13 +88,13 @@ router.post('/:id', async (_req: AuthenticatedRequest, res) => {
         // Kalkulacija pre nove uplate
         const balance = await calculateStudentBalance(student);
 
-        // Provera da uplata ne premašuje preostali dug
-        if (iznosZaUplatu > balance.remainingAmount) {
-            return res.status(400).json({
-                message: `Iznos uplate (${iznosZaUplatu}€) premašuje preostali dug (${balance.remainingAmount}€)`,
-                maxAllowed: balance.remainingAmount
-            });
-        }
+        // Uplata sme da pređe preostali dug — učenik ponekad zaokruži
+        // iznos naviše. Višak se vodi kao preplata, a NE povećava ono
+        // što sleduje menadžeru: njegova provizija je ograničena na
+        // procenat od cene školarine (vidi rateZaUcenika).
+        //
+        // Da unos od 15000 umesto 1500 ne bi prošao nezapaženo, ekran
+        // pre slanja traži potvrdu kad iznos pređe dug.
 
         // Kreiraj novu uplatu
         const payment = new Payment();
@@ -189,18 +189,8 @@ router.patch('/:id', async (_req: AuthenticatedRequest, res) => {
 
         const newTotalPaid = totalPaidWithoutCurrent + iznosUplate;
 
-        // Provera da zbir svih rata ne premašuje dug.
-        // Isplate menadžeru se ovde ne mešaju — vode se odvojeno.
-        if (newTotalPaid > totalDebt) {
-            const maxNominalAllowed = maksimalnaIzmenaUplate(
-                totalDebt,
-                totalPaidWithoutCurrent
-            );
-            return res.status(400).json({
-                message: `Novi iznos (${iznosUplate}€) premašuje preostali dug. Maksimalan iznos: ${maxNominalAllowed.toFixed(2)}€`,
-                maxAllowed: parseFloat(maxNominalAllowed.toFixed(2))
-            });
-        }
+        // Zbir rata sme da pređe dug — višak se vodi kao preplata,
+        // isto kao i kod unosa nove uplate.
 
         payment.amount = iznosUplate;
         payment.paidAt = datumUplate;
@@ -299,96 +289,164 @@ router.delete('/:id', async (_req: AuthenticatedRequest, res) => {
     }
 });
 
-// POST - Isplata menadžeru
-router.post('/:idStudenta/isplataMenadzeru', async (req: AuthenticatedRequest, res) => {
+/**
+ * Učitava učenika sa svime što treba za rate menadžera.
+ * Vraća poruku o grešci umesto učenika kad nešto ne valja.
+ */
+type NalazUcenika =
+    | { greska: string; status: number }
+    | { student: Student };
+
+async function ucenikZaRate(
+    studentId: number,
+    user: AuthenticatedRequest['user']
+): Promise<NalazUcenika> {
+    const zabrana = samoAdminIliRacunovodja(user);
+    if (zabrana) return { greska: zabrana, status: 403 };
+
+    if (!Number.isInteger(studentId) || studentId <= 0) {
+        return { greska: 'Nevalidan učenik', status: 400 };
+    }
+
+    const student = await studentRepo.findOne({
+        where: { id: studentId },
+        relations: [...RELACIJE_ZA_OBRACUN, 'menadzer'],
+    });
+
+    if (!student) return { greska: 'Student nije pronađen', status: 404 };
+    if (!student.menadzer) {
+        return { greska: 'Student nema menadžera', status: 400 as const };
+    }
+    if (!student.procenatManagera || student.procenatManagera <= 0) {
+        return {
+            greska: 'Procenat menadžera nije određen za ovog učenika',
+            status: 400,
+        };
+    }
+
+    return { student };
+}
+
+/**
+ * POST - označava da je menadžeru isplaćena rata za jednu uplatu učenika.
+ *
+ * Iznos se ne prima iz zahteva nego se računa iz same uplate i procenta,
+ * da administracija ne bi morala ništa da kuca i da se ne bi omašilo.
+ */
+router.post('/:idStudenta/rata/:paymentId', async (req: AuthenticatedRequest, res) => {
     try {
-        // Isplate menadžerima nisu u nadležnosti naloga škola
-        const zabrana = samoAdminIliRacunovodja(req.user);
-        if (zabrana) {
-            return res.status(403).json({message: zabrana});
-        }
-
         const studentId = parseInt(req.params.idStudenta);
-        let {iznosZaUplatu, desc, datumIsplate} = req.body;
+        const paymentId = parseInt(req.params.paymentId);
 
-        iznosZaUplatu = parseFloat(iznosZaUplatu);
-        desc = desc || '';
+        const nalaz = await ucenikZaRate(studentId, req.user);
+        if ('greska' in nalaz) {
+            return res.status(nalaz.status).json({ message: nalaz.greska });
+        }
+        const student = nalaz.student;
 
-        // Validacija datuma
-        datumIsplate = new Date(datumIsplate);
-        if (isNaN(datumIsplate.getTime())) {
-            return res.status(400).json({
-                message: 'Neispravan format datuma.'
-            });
+        // Uplata mora da pripada baš tom učeniku
+        const uplata = (student.payments ?? []).find(p => p.id === paymentId);
+        if (!uplata) {
+            return res
+                .status(404)
+                .json({ message: 'Uplata nije pronađena kod ovog učenika' });
         }
 
-        // Validacija iznosa
-        if (isNaN(studentId) || isNaN(iznosZaUplatu) || iznosZaUplatu <= 0) {
-            return res.status(400).json({
-                message: 'Nevalidan unos. ID studenta mora biti broj, a iznos pozitivan broj.'
-            });
-        }
-
-        // Učitaj studenta
-        const student = await studentRepo.findOne({
-            where: {'id': studentId},
-            relations: ['menadzer', 'managerPayouts', 'payments']
+        // Dvostruki klik ne sme da isplati menadžeru dvaput
+        const vecIsplacena = await managerPaymentRepo.findOne({
+            where: { paymentId },
         });
-
-        if (!student) {
-            return res.status(404).json({message: 'Student nije pronađen'});
+        if (vecIsplacena) {
+            return res
+                .status(409)
+                .json({ message: 'Та рата је већ означена као исплаћена' });
         }
 
-        if (!student.menadzer) {
-            return res.status(404).json({message: 'Student nema menadžera'});
-        }
+        // Iznos se uzima iz istog obračuna koji se prikazuje na ekranu —
+        // tako je ograničen ukupnom provizijom, pa preplata učenika ne
+        // može da naduva ono što menadžeru sleduje
+        const obracun = obracunUcenika(student);
+        const rate = rateZaUcenika(
+            student.payments,
+            student.managerPayouts,
+            student.procenatManagera,
+            obracun.provizijaMenadzera
+        );
+        const rata = rate.find(r => r.paymentId === paymentId);
+        const iznos = rata ? rata.sledujeMenadzeru : 0;
 
-        // Provera da li postoji definisan procenat za menadžera
-        if (!student.procenatManagera || student.procenatManagera <= 0) {
+        if (iznos <= 0) {
             return res.status(400).json({
-                message: 'Procenat menadžera nije definisan za ovog studenta'
+                message:
+                    'Из те уплате менаџеру ништа не следује — провизија је већ попуњена',
             });
         }
 
-        const balance = await calculateStudentBalance(student);
+        const isplata = new ManagerPayment();
+        isplata.amount = iznos;
+        isplata.menadzer = student.menadzer!;
+        isplata.student = student;
+        isplata.paymentId = paymentId;
+        isplata.paidAt = new Date();
+        isplata.description = `Рата за уплату од ${new Date(
+            uplata.paidAt
+        ).toLocaleDateString('sr-RS')}`;
 
-        // Provera da isplata ne premašuje dozvoljeni iznos za menadžera
-        if (iznosZaUplatu > balance.remainingForManager) {
-            return res.status(400).json({
-                message: `Iznos premašuje preostali iznos za isplatu menadžeru. Možete isplatiti najviše ${balance.remainingForManager}€`,
-                maxAllowed: balance.remainingForManager,
-                totalPaidToManager: balance.totalPaidToManager,
-                maxAllowedForManager: balance.maxManagerPayout
-            });
-        }
-
-        // KLJUČNA PROVERA: Da li student ima dovoljno uplata da pokrije isplatu menadžeru?
-        const newTotalPaidToManager = balance.totalPaidToManager + iznosZaUplatu;
-        if (newTotalPaidToManager > balance.totalPaid) {
-            return res.status(400).json({
-                message: `Ne možete isplatiti menadžeru više nego što je student uplatio. Student je uplatio ${balance.totalPaid}€, a pokušavate isplatiti menadžeru ukupno ${newTotalPaidToManager}€`
-            });
-        }
-
-        // Kreiraj isplatu menadžeru
-        const novaIsplata = new ManagerPayment();
-        novaIsplata.amount = iznosZaUplatu;
-        novaIsplata.menadzer = student.menadzer;
-        novaIsplata.paidAt = datumIsplate;
-        novaIsplata.student = student;
-        novaIsplata.description = desc;
-
-        await managerPaymentRepo.save(novaIsplata);
+        await managerPaymentRepo.save(isplata);
 
         res.status(201).json({
-            message: 'Isplata menadžeru uspešno evidentirana',
-            isplata: novaIsplata
+            message: 'Рата је означена као исплаћена',
+            isplata: {
+                id: isplata.id,
+                amount: iznos,
+                paidAt: isplata.paidAt,
+                paymentId,
+            },
         });
-
     } catch (error) {
-        console.error('Greška pri isplati menadžeru:', error);
-        res.status(500).json({ message: 'Došlo je do greške pri uplati menadžeru' });
+        console.error('Greška pri označavanju rate:', error);
+        res.status(500).json({ message: 'Дошло је до грешке' });
     }
 });
+
+/**
+ * DELETE - poništava oznaku da je rata isplaćena.
+ * Briše zapis o isplati, pa ide iza potvrde na ekranu.
+ */
+router.delete('/:idStudenta/rata/:paymentId', async (req: AuthenticatedRequest, res) => {
+    try {
+        const studentId = parseInt(req.params.idStudenta);
+        const paymentId = parseInt(req.params.paymentId);
+
+        const nalaz = await ucenikZaRate(studentId, req.user);
+        if ('greska' in nalaz) {
+            return res.status(nalaz.status).json({ message: nalaz.greska });
+        }
+
+        const isplata = await managerPaymentRepo.findOne({
+            where: { paymentId, studentId },
+        });
+        if (!isplata) {
+            return res
+                .status(404)
+                .json({ message: 'Та рата није ни означена као исплаћена' });
+        }
+
+        await managerPaymentRepo.delete(isplata.id);
+
+        res.json({
+            message: 'Ознака је поништена',
+            paymentId,
+        });
+    } catch (error) {
+        console.error('Greška pri poništavanju rate:', error);
+        res.status(500).json({ message: 'Дошло је до грешке' });
+    }
+});
+
+// Ručni unos iznosa isplate menadžeru je uklonjen — iznos se sada
+// računa sam, iz uplate učenika i procenta, a administracija samo
+// štiklira koja je rata isplaćena (rute /:idStudenta/rata/:paymentId).
+
 
 export default router

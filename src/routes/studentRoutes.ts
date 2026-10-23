@@ -30,6 +30,7 @@ import {
 } from "../utiles/schoolYear";
 import { obracunUcenika, RELACIJE_ZA_OBRACUN } from "../utiles/obracun";
 import { jeDozvoljenProcenat, PROCENAT_ZA_REDOVNE } from "../utiles/procenti";
+import { rateZaUcenika, zbirRata } from "../utiles/rateMenadzera";
 import {
   razlogPreskakanja,
   sledeciRazred,
@@ -197,9 +198,15 @@ router.get("/stats", async (req, res) => {
       where.type = tipUpisaNaloga;
     }
 
-    // Broj učenika se računa za tekuću školsku godinu (1.9. - 31.8.),
-    // brojanje kreće ispočetka svakog 1. septembra
-    const schoolYearStart = getSchoolYearForDate(new Date());
+    // Broj učenika se računa za IZABRANU školsku godinu (1.9. - 31.8.).
+    // Ako godina nije poslata, uzima se tekuća.
+    //
+    // Ranije se ovde uvek računala tekuća godina, pa je kartica iznad
+    // tabele pokazivala 2026/2027 i kad je u filteru izabrana druga
+    // godina — izgledalo je kao da filter ne radi.
+    const tekucaSkolskaGodina = getSchoolYearForDate(new Date());
+    const schoolYearStart =
+      parseSchoolYear(req.query.schoolYear) ?? tekucaSkolskaGodina;
     const { start: schoolYearFrom, end: schoolYearTo } =
       getSchoolYearRange(schoolYearStart);
 
@@ -231,16 +238,23 @@ router.get("/stats", async (req, res) => {
       .addSelect("MAX(s.createdAt)", "max")
       .getRawOne();
 
+    // Spisak godina se gradi oko TEKUĆE, ne oko izabrane — inače bi
+    // izbor stare godine mogao da izbaci tekuću sa spiska, pa korisnik
+    // ne bi imao kako da se vrati.
     const availableSchoolYears: number[] = [];
     if (rasponUpisa?.min && rasponUpisa?.max) {
-      const prva = getSchoolYearForDate(new Date(rasponUpisa.min));
+      const prva = Math.min(
+        getSchoolYearForDate(new Date(rasponUpisa.min)),
+        schoolYearStart
+      );
       const poslednja = Math.max(
         getSchoolYearForDate(new Date(rasponUpisa.max)),
+        tekucaSkolskaGodina,
         schoolYearStart
       );
       for (let g = poslednja; g >= prva; g--) availableSchoolYears.push(g);
     } else {
-      availableSchoolYears.push(schoolYearStart);
+      availableSchoolYears.push(tekucaSkolskaGodina);
     }
 
     res.json({
@@ -508,6 +522,16 @@ router.get("/:id", async (req, res) => {
     const commissionAmount = obracun.provizijaMenadzera;
     const remainingForManager = obracun.preostaloMenadzeru;
 
+    // Rate menadžera — po jedna za svaku uplatu učenika
+    const rate = rateZaUcenika(
+      student.payments,
+      student.managerPayouts,
+      student.procenatManagera,
+      // Gornja granica: preplata učenika ne sme da naduva proviziju
+      obracun.provizijaMenadzera
+    );
+    const zbir = zbirRata(rate);
+
     res.json({
       student: {
         id: student.id,
@@ -540,6 +564,10 @@ router.get("/:id", async (req, res) => {
         managerPayments: {
           installments: student.managerPayouts,
         },
+        // Menadžer zarađuje svoj procenat od svake uplate učenika.
+        // Rate se ne čuvaju u bazi — računaju se, pa uvek prate uplate.
+        rateMenadzera: rate,
+        zbirRata: zbir,
         schoolId: student.occupation?.school?.id,
       },
     });
